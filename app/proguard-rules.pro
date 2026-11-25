@@ -1,0 +1,1 @@
+# MotoMove ProGuard rules
