@@ -9,3 +9,5 @@
 .externalNativeBuild
 .cxx
 *.aab
+.firebase/
+firebase-debug.log*

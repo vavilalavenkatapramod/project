@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "435395954976",
+    "project_id": "moto-move",
+    "storage_bucket": "moto-move.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:435395954976:android:dddf2570ffd724205d2f45",
+        "android_client_info": {
+          "package_name": "com.motomove.himachal"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB5Pf1C6frqP-LwSq_LPVnpgGUEaJ3YjhI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

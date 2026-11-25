@@ -98,7 +98,7 @@ fun ProviderDashboardScreen(
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("${user.role.displayName} Live Control", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MotoGreen)
-                Text("Verification: ${provider?.verificationStatus?.label ?: "Pending"} • Sync: ${if (state.isLiveConnected) "LIVE BROADCAST ON" else "Local Mode"}")
+                Text("Verification: ${provider?.verificationStatus?.label ?: "Pending"} • Sync: ${if (state.isFirebaseConnected || state.isLiveConnected) "CLOUD LIVE BROADCAST ON" else "Local Mode"}")
                 Text("Ownership Lock: You can only update your own vehicles, drivers, rooms, or food spots.", style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = nameDraft, onValueChange = { nameDraft = it }, label = { Text("Your Display Name") }, modifier = Modifier.weight(1f), singleLine = true)

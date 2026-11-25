@@ -15,6 +15,7 @@ import com.motomove.himachal.data.HimachalCatalog
 import com.motomove.himachal.data.MotoMoveDatabaseHelper
 import com.motomove.himachal.data.MotoMoveRepository
 import com.motomove.himachal.data.OpResult
+import com.motomove.himachal.live.FirebaseLiveSyncManager
 import com.motomove.himachal.live.LiveSyncClient
 import com.motomove.himachal.model.AppNotification
 import com.motomove.himachal.model.AuditLog
@@ -45,6 +46,7 @@ data class ChatBubble(val isUser: Boolean, val text: String)
 
 data class MotoMoveUiState(
     val currentUser: User? = null,
+    val firebaseUid: String? = null,
     val demoUsers: List<User> = emptyList(),
     val currentProvider: ProviderProfile? = null,
     val vehicles: List<VehicleListing> = emptyList(),
@@ -59,8 +61,9 @@ data class MotoMoveUiState(
     val notifications: List<AppNotification> = emptyList(),
     val auditLogs: List<AuditLog> = emptyList(),
     val pilotMetrics: PilotMetrics? = null,
-    // Live Multi-Device Sync state
-    val liveServerUrl: String = "http://10.0.2.2:8080",
+    // Cloud Firestore + optional SSE Live Sync state
+    val isFirebaseConnected: Boolean = false,
+    val liveServerUrl: String = "",
     val isLiveConnected: Boolean = false,
     // Explore Refine Search state
     val selectedCategory: Int = 0,
@@ -92,90 +95,171 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
     private val prefs = application.getSharedPreferences("motomove_prefs", Context.MODE_PRIVATE)
     private val dbHelper = MotoMoveDatabaseHelper(application)
     private val repo = MotoMoveRepository(dbHelper)
+    private val firebaseSync = FirebaseLiveSyncManager()
     private val liveClient = LiveSyncClient()
     private var sseJob: Job? = null
+
+    private var cloudVehicles: List<VehicleListing> = emptyList()
+    private var cloudDrivers: List<DriverProfile> = emptyList()
+    private var cloudProperties: List<PropertyListing> = emptyList()
+    private var cloudRooms: List<RoomType> = emptyList()
+    private var cloudDining: List<DiningSpot> = emptyList()
+    private var cloudBookings: List<Booking> = emptyList()
+    private var cloudNotifications: List<AppNotification> = emptyList()
 
     var uiState by mutableStateOf(MotoMoveUiState())
         private set
 
     init {
-        val savedUrl = prefs.getString("live_server_url", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080"
+        val savedUrl = prefs.getString("live_server_url", "") ?: ""
         uiState = uiState.copy(liveServerUrl = savedUrl)
         refreshAll()
-        startLiveStream(savedUrl)
+        if (savedUrl.isNotBlank()) startLiveStream(savedUrl)
     }
 
     fun setLiveServerUrl(url: String) {
         val clean = url.trim().trimEnd('/')
         prefs.edit().putString("live_server_url", clean).apply()
         uiState = uiState.copy(liveServerUrl = clean, isLiveConnected = false)
-        startLiveStream(clean)
-        showMessage("Connecting to Live Server: $clean")
+        if (clean.isNotBlank()) {
+            startLiveStream(clean)
+            showMessage("Connecting to optional SSE Server: $clean")
+        } else {
+            sseJob?.cancel()
+            showMessage("Using Cloud Firestore Live Sync.")
+        }
+    }
+
+    private fun bindFirebaseSession(user: User, rawPassword: String) {
+        firebaseSync.authenticateAndBind(
+            user = user,
+            rawPassword = rawPassword,
+            onReady = { uid ->
+                uiState = uiState.copy(firebaseUid = uid, isFirebaseConnected = true)
+                val provId = repo.getProviderForUser(user.userId)?.providerId
+                if (provId != null) {
+                    firebaseSync.seedProviderListingsIfOwned(
+                        uid = uid,
+                        vehicles = repo.getVehicles(includeUnapproved = true).filter { it.providerId == provId },
+                        drivers = repo.getDrivers(includeUnapproved = true).filter { it.providerId == provId },
+                        properties = repo.getProperties(includeUnapproved = true).filter { it.providerId == provId },
+                        rooms = repo.getAllRooms().filter { r ->
+                            repo.getProperties(includeUnapproved = true).any { p -> p.propertyId == r.propertyId && p.providerId == provId }
+                        },
+                        diningSpots = repo.getDiningSpots().filter { it.providerId == provId }
+                    )
+                }
+                firebaseSync.startListeners(
+                    uid = uid,
+                    role = user.role,
+                    onVehicles = { list -> cloudVehicles = list; mergeAndEmitState() },
+                    onDrivers = { list -> cloudDrivers = list; mergeAndEmitState() },
+                    onProperties = { list -> cloudProperties = list; mergeAndEmitState() },
+                    onRooms = { list -> cloudRooms = list; mergeAndEmitState() },
+                    onDining = { list -> cloudDining = list; mergeAndEmitState() },
+                    onBookings = { list -> cloudBookings = list; mergeAndEmitState() },
+                    onNotifications = { list -> cloudNotifications = list; mergeAndEmitState() },
+                    onStatus = { connected, _ ->
+                        uiState = uiState.copy(isFirebaseConnected = connected)
+                    }
+                )
+            },
+            onError = {
+                uiState = uiState.copy(isFirebaseConnected = false)
+            }
+        )
+    }
+
+    private fun mergeAndEmitState() {
+        val user = uiState.currentUser
+        val isAdmin = user?.role == UserRole.ADMINISTRATOR
+        val isProvider = user?.role in setOf(UserRole.VEHICLE_OWNER, UserRole.LOCAL_DRIVER, UserRole.ACCOMMODATION_PROVIDER)
+        val includeUnapproved = isAdmin || isProvider
+
+        val localVehicles = repo.getVehicles(includeUnapproved)
+        val mergedVehicles = mergeByKey(localVehicles, cloudVehicles) { it.vehicleId }
+
+        val localDrivers = repo.getDrivers(includeUnapproved)
+        val mergedDrivers = mergeByKey(localDrivers, cloudDrivers) { it.driverId }
+
+        val localProps = repo.getProperties(includeUnapproved)
+        val mergedProps = mergeByKey(localProps, cloudProperties) { it.propertyId }
+
+        val localRooms = repo.getAllRooms()
+        val mergedRooms = mergeByKey(localRooms, cloudRooms) { it.roomTypeId }
+        val roomsMap = mergedRooms.groupBy { it.propertyId }
+
+        val localDining = repo.getDiningSpots()
+        val mergedDining = mergeByKey(localDining, cloudDining) { it.spotId }
+
+        val localBookings = user?.let { repo.getBookingsForActor(it) } ?: emptyList()
+        val mergedBookings = mergeByKey(localBookings, cloudBookings) { it.bookingId }
+            .sortedByDescending { it.createdAt }
+
+        val localNotifs = user?.let { repo.getNotificationsForUser(it.userId) } ?: emptyList()
+        val mergedNotifs = (cloudNotifications + localNotifs)
+            .distinctBy { it.notificationId }
+            .sortedByDescending { it.createdAt }
+
+        uiState = uiState.copy(
+            vehicles = mergedVehicles,
+            drivers = mergedDrivers,
+            properties = mergedProps,
+            roomsByProperty = roomsMap,
+            diningSpots = mergedDining,
+            bookings = mergedBookings,
+            notifications = mergedNotifs
+        )
+    }
+
+    private fun <T> mergeByKey(base: List<T>, overlay: List<T>, keyFn: (T) -> String): List<T> {
+        if (overlay.isEmpty()) return base
+        val map = LinkedHashMap<String, T>()
+        base.forEach { map[keyFn(it)] = it }
+        overlay.forEach { map[keyFn(it)] = it }
+        return map.values.toList()
     }
 
     private fun startLiveStream(url: String) {
         sseJob?.cancel()
         if (url.isBlank()) return
         sseJob = viewModelScope.launch {
-            pullLiveSnapshot()
             liveClient.observeEvents(url).collect { event ->
                 if (event == null) {
                     uiState = uiState.copy(isLiveConnected = false)
                 } else {
                     uiState = uiState.copy(isLiveConnected = true)
-                    pullLiveSnapshot()
+                    val snap = liveClient.fetchSnapshot(url, uiState.currentUser?.userId)
+                    if (snap != null) {
+                        cloudVehicles = snap.vehicles
+                        cloudDrivers = snap.drivers
+                        cloudProperties = snap.properties
+                        cloudRooms = snap.roomTypes
+                        cloudDining = snap.diningSpots
+                        cloudBookings = snap.bookings
+                        cloudNotifications = snap.notifications
+                        mergeAndEmitState()
+                    }
                     if (event.type != "CONNECTED" && event.summary.isNotBlank()) {
-                        val mine = event.targetUserId == null || event.targetUserId == uiState.currentUser?.userId
-                        if (mine) {
-                            showMessage("LIVE: ${event.summary}")
-                        }
+                        showMessage("LIVE: ${event.summary}")
                     }
                 }
             }
         }
     }
 
-    private suspend fun pullLiveSnapshot() {
-        val snap = liveClient.fetchSnapshot(uiState.liveServerUrl, uiState.currentUser?.userId) ?: return
-        val roomsMap = snap.roomTypes.groupBy { it.propertyId }
-        uiState = uiState.copy(
-            isLiveConnected = true,
-            vehicles = snap.vehicles,
-            drivers = snap.drivers,
-            properties = snap.properties,
-            roomsByProperty = roomsMap,
-            diningSpots = snap.diningSpots,
-            bookings = if (uiState.currentUser != null) snap.bookings else uiState.bookings,
-            notifications = if (uiState.currentUser != null) snap.notifications else uiState.notifications
-        )
-    }
-
     fun refreshAll() {
         val user = uiState.currentUser
-        val isAdmin = user?.role == UserRole.ADMINISTRATOR
-        val isProvider = user?.role in setOf(UserRole.VEHICLE_OWNER, UserRole.LOCAL_DRIVER, UserRole.ACCOMMODATION_PROVIDER)
-        val includeUnapproved = isAdmin || isProvider
-        val props = repo.getProperties(includeUnapproved = includeUnapproved)
-        val roomsMap = props.associate { it.propertyId to repo.getRoomsForProperty(it.propertyId) }
-
         uiState = uiState.copy(
             demoUsers = repo.getAllDemoUsers(),
             currentProvider = user?.let { repo.getProviderForUser(it.userId) },
-            vehicles = repo.getVehicles(includeUnapproved = includeUnapproved),
-            drivers = repo.getDrivers(includeUnapproved = includeUnapproved),
-            properties = props,
-            diningSpots = repo.getDiningSpots(),
             travelReels = repo.getReelsForUser(user?.userId),
-            roomsByProperty = roomsMap,
-            bookings = user?.let { repo.getBookingsForActor(it) } ?: emptyList(),
             verificationDocs = user?.let { repo.getVerificationDocumentsForActor(it) } ?: emptyList(),
             reviews = repo.getReviewsForListing(null),
-            notifications = user?.let { repo.getNotificationsForUser(it.userId) } ?: emptyList(),
             auditLogs = user?.let { repo.getAuditLogsForActor(it) } ?: emptyList(),
             pilotMetrics = user?.let { repo.getPilotMetrics(it) }
         )
-
-        viewModelScope.launch { pullLiveSnapshot() }
+        mergeAndEmitState()
     }
 
     fun clearBanner() {
@@ -191,7 +275,8 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             is OpResult.Success -> {
                 uiState = uiState.copy(currentUser = res.data)
                 refreshAll()
-                showMessage("Signed in securely as ${res.data.name}")
+                bindFirebaseSession(res.data, password)
+                showMessage("Signed in as ${res.data.name} (Cloud Live Sync connecting...)")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
         }
@@ -200,6 +285,7 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
     fun quickSignInDemo(user: User) {
         uiState = uiState.copy(currentUser = user)
         refreshAll()
+        bindFirebaseSession(user, "demo1234")
         showMessage("Switched to ${user.name} (${user.role.displayName})")
     }
 
@@ -208,6 +294,7 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             is OpResult.Success -> {
                 uiState = uiState.copy(currentUser = res.data)
                 refreshAll()
+                bindFirebaseSession(res.data, password)
                 showMessage("Account created securely for ${res.data.name}")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -215,7 +302,16 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun logout() {
-        uiState = uiState.copy(currentUser = null, statusBanner = null, aiChatMessages = emptyList())
+        firebaseSync.signOut()
+        cloudBookings = emptyList()
+        cloudNotifications = emptyList()
+        uiState = uiState.copy(
+            currentUser = null,
+            firebaseUid = null,
+            isFirebaseConnected = false,
+            statusBanner = null,
+            aiChatMessages = emptyList()
+        )
         refreshAll()
     }
 
@@ -255,97 +351,92 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         uiState = uiState.copy(foodClusterFilter = cluster, foodSpecialtyFilter = specialty)
     }
 
-    // --- Live Real-Time Broadcast Controls for Providers ---
+    // --- Real-Time Cloud Firestore + Local SQLite Broadcast Controls ---
 
     fun toggleVehicleLive(vehicle: VehicleListing, availableNow: Boolean, rateInr: Int, note: String) {
         val user = uiState.currentUser ?: return
-        if (uiState.isLiveConnected) {
-            viewModelScope.launch {
-                val r = liveClient.patchVehicleLive(uiState.liveServerUrl, user.userId, vehicle.vehicleId, availableNow, rateInr, note)
-                r.onSuccess {
-                    pullLiveSnapshot()
-                    showMessage("Broadcasted LIVE update for ${vehicle.title}")
-                }.onFailure {
-                    showMessage(it.message ?: "Live update denied", isError = true)
+        when (val res = repo.toggleVehicleLive(user, vehicle.vehicleId, availableNow, rateInr, note)) {
+            is OpResult.Success -> {
+                val updated = vehicle.copy(
+                    isAvailableNow = availableNow,
+                    rateInr = rateInr.coerceAtLeast(500),
+                    liveStatusNote = note.ifBlank { if (availableNow) "Available now" else "On trip" },
+                    lastUpdatedAt = System.currentTimeMillis()
+                )
+                refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.upsertVehicle(updated) { ok, err ->
+                        showMessage(if (ok) "LIVE on Firebase: ${vehicle.title} updated!" else "Cloud error: $err", !ok)
+                    }
+                } else {
+                    showMessage("Updated ${vehicle.title} locally.")
                 }
             }
-        } else {
-            when (val res = repo.toggleVehicleLive(user, vehicle.vehicleId, availableNow, rateInr, note)) {
-                is OpResult.Success -> {
-                    refreshAll()
-                    showMessage("Updated ${vehicle.title} locally (connect Live Server to sync across phones).")
-                }
-                is OpResult.Error -> showMessage(res.message, isError = true)
-            }
+            is OpResult.Error -> showMessage(res.message, isError = true)
         }
     }
 
     fun toggleDriverLive(driver: DriverProfile, availableNow: Boolean, ratePerDay: Int, summary: String) {
         val user = uiState.currentUser ?: return
-        if (uiState.isLiveConnected) {
-            viewModelScope.launch {
-                val r = liveClient.patchDriverLive(uiState.liveServerUrl, user.userId, driver.driverId, availableNow, ratePerDay, summary)
-                r.onSuccess {
-                    pullLiveSnapshot()
-                    showMessage("Broadcasted LIVE driver status!")
-                }.onFailure {
-                    showMessage(it.message ?: "Live update denied", isError = true)
-                }
-            }
-        } else {
-            when (val res = repo.toggleDriverLive(user, driver.driverId, availableNow, ratePerDay, summary)) {
-                is OpResult.Success -> {
-                    refreshAll()
+        when (val res = repo.toggleDriverLive(user, driver.driverId, availableNow, ratePerDay, summary)) {
+            is OpResult.Success -> {
+                val updated = driver.copy(
+                    isAvailableNow = availableNow,
+                    ratePerDayInr = ratePerDay.coerceAtLeast(500),
+                    availabilitySummary = summary.ifBlank { if (availableNow) "Online & ready" else "On trip" },
+                    lastUpdatedAt = System.currentTimeMillis()
+                )
+                refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.upsertDriver(updated) { ok, err ->
+                        showMessage(if (ok) "LIVE on Firebase: Driver status broadcasted!" else "Cloud error: $err", !ok)
+                    }
+                } else {
                     showMessage("Driver status updated locally.")
                 }
-                is OpResult.Error -> showMessage(res.message, isError = true)
             }
+            is OpResult.Error -> showMessage(res.message, isError = true)
         }
     }
 
     fun updateRoomLiveInventory(room: RoomType, newInventory: Int, newRate: Int) {
         val user = uiState.currentUser ?: return
-        if (uiState.isLiveConnected) {
-            viewModelScope.launch {
-                val r = liveClient.patchRoomLive(uiState.liveServerUrl, user.userId, room.roomTypeId, newInventory.coerceAtLeast(0), newRate)
-                r.onSuccess {
-                    pullLiveSnapshot()
-                    showMessage("Broadcasted LIVE room count (${newInventory.coerceAtLeast(0)})!")
-                }.onFailure {
-                    showMessage(it.message ?: "Room update denied", isError = true)
-                }
-            }
-        } else {
-            when (val res = repo.updateRoomLiveInventory(user, room.roomTypeId, newInventory, newRate)) {
-                is OpResult.Success -> {
-                    refreshAll()
+        val count = newInventory.coerceAtLeast(0)
+        when (val res = repo.updateRoomLiveInventory(user, room.roomTypeId, count, newRate)) {
+            is OpResult.Success -> {
+                val updated = room.copy(inventoryCount = count, ratePerNightInr = newRate.coerceAtLeast(500))
+                refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.upsertRoom(updated) { ok, err ->
+                        showMessage(if (ok) "LIVE on Firebase: ${room.name} ($count rooms left)!" else "Cloud error: $err", !ok)
+                    }
+                } else {
                     showMessage("Room inventory updated locally.")
                 }
-                is OpResult.Error -> showMessage(res.message, isError = true)
             }
+            is OpResult.Error -> showMessage(res.message, isError = true)
         }
     }
 
     fun toggleDiningLive(spot: DiningSpot, isOpenNow: Boolean, note: String, avgCost: Int) {
         val user = uiState.currentUser ?: return
-        if (uiState.isLiveConnected) {
-            viewModelScope.launch {
-                val r = liveClient.patchDiningLive(uiState.liveServerUrl, user.userId, spot.spotId, isOpenNow, note, avgCost)
-                r.onSuccess {
-                    pullLiveSnapshot()
-                    showMessage("Broadcasted LIVE dining status for ${spot.name}!")
-                }.onFailure {
-                    showMessage(it.message ?: "Dining update denied", isError = true)
+        when (val res = repo.toggleDiningLive(user, spot.spotId, isOpenNow, note, avgCost)) {
+            is OpResult.Success -> {
+                val updated = spot.copy(
+                    isOpenNow = isOpenNow,
+                    liveStatusNote = note.ifBlank { if (isOpenNow) "Tables open now" else "Currently full" },
+                    avgCostInr = avgCost.coerceAtLeast(100)
+                )
+                refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.upsertDining(updated) { ok, err ->
+                        showMessage(if (ok) "LIVE on Firebase: ${spot.name} updated!" else "Cloud error: $err", !ok)
+                    }
+                } else {
+                    showMessage("Dining status updated locally.")
                 }
             }
-        } else {
-            when (val res = repo.toggleDiningLive(user, spot.spotId, isOpenNow, note, avgCost)) {
-                is OpResult.Success -> {
-                    refreshAll()
-                    showMessage("Dining availability updated locally.")
-                }
-                is OpResult.Error -> showMessage(res.message, isError = true)
-            }
+            is OpResult.Error -> showMessage(res.message, isError = true)
         }
     }
 
@@ -383,13 +474,9 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             cancellationTerms = vehicle.cancellationTerms
         )) {
             is OpResult.Success -> {
-                if (uiState.isLiveConnected) {
-                    viewModelScope.launch {
-                        liveClient.postBooking(uiState.liveServerUrl, user.userId, res.data)
-                        pullLiveSnapshot()
-                    }
-                } else {
-                    refreshAll()
+                refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.createBooking(res.data, vehicle.ownerUid) { _, _ -> }
                 }
                 showMessage("Pickup/Ride request sent! ID: ${res.data.bookingId} (₹${res.data.quotedPriceInr})")
             }
@@ -430,13 +517,9 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             cancellationTerms = driver.cancellationTerms
         )) {
             is OpResult.Success -> {
-                if (uiState.isLiveConnected) {
-                    viewModelScope.launch {
-                        liveClient.postBooking(uiState.liveServerUrl, user.userId, res.data)
-                        pullLiveSnapshot()
-                    }
-                } else {
-                    refreshAll()
+                refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.createBooking(res.data, driver.ownerUid) { _, _ -> }
                 }
                 showMessage("Driver request sent to ${driver.name}!")
             }
@@ -455,13 +538,9 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         val user = uiState.currentUser ?: return
         when (val res = repo.createStayBooking(user, property, roomType, checkInDay, checkOutDay, guests, notes)) {
             is OpResult.Success -> {
-                if (uiState.isLiveConnected) {
-                    viewModelScope.launch {
-                        liveClient.postBooking(uiState.liveServerUrl, user.userId, res.data)
-                        pullLiveSnapshot()
-                    }
-                } else {
-                    refreshAll()
+                refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.createBooking(res.data, property.ownerUid) { _, _ -> }
                 }
                 showMessage("Stay request sent to ${property.name} (₹${res.data.quotedPriceInr})!")
             }
@@ -473,13 +552,9 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         val user = uiState.currentUser ?: return
         when (val res = repo.createDiningReservation(user, spot, guests, notes)) {
             is OpResult.Success -> {
-                if (uiState.isLiveConnected) {
-                    viewModelScope.launch {
-                        liveClient.postBooking(uiState.liveServerUrl, user.userId, res.data)
-                        pullLiveSnapshot()
-                    }
-                } else {
-                    refreshAll()
+                refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.createBooking(res.data, spot.ownerUid) { _, _ -> }
                 }
                 showMessage("Table reserved at ${spot.name} for $guests guests!")
             }
@@ -489,42 +564,59 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
 
     fun respondToBooking(bookingId: String, accept: Boolean) {
         val user = uiState.currentUser ?: return
-        if (uiState.isLiveConnected) {
-            viewModelScope.launch {
-                liveClient.postRespondBooking(uiState.liveServerUrl, user.userId, bookingId, accept)
-                    .onSuccess {
-                        pullLiveSnapshot()
-                        showMessage("Live response broadcasted!")
-                    }
-                    .onFailure { showMessage(it.message ?: "Failed", isError = true) }
+        val cloudTarget = uiState.bookings.firstOrNull { it.bookingId == bookingId }
+        val localRes = repo.respondToBooking(user, bookingId, accept)
+        if (localRes is OpResult.Success) {
+            refreshAll()
+            if (uiState.isFirebaseConnected && cloudTarget != null) {
+                firebaseSync.updateBookingStatus(
+                    cloudTarget,
+                    if (accept) BookingStatus.ACCEPTED else BookingStatus.REJECTED
+                ) { _, _ -> }
             }
-            return
-        }
-        when (val res = repo.respondToBooking(user, bookingId, accept)) {
-            is OpResult.Success -> {
-                refreshAll()
-                showMessage("Booking updated to ${res.data.label}.")
+            showMessage("Booking updated to ${localRes.data.label}.")
+        } else if (uiState.isFirebaseConnected && cloudTarget != null) {
+            val newStatus = if (accept) BookingStatus.ACCEPTED else BookingStatus.REJECTED
+            firebaseSync.updateBookingStatus(cloudTarget, newStatus) { ok, err ->
+                showMessage(if (ok) "Live booking ${newStatus.label}!" else "Access denied: $err", !ok)
             }
-            is OpResult.Error -> showMessage(res.message, isError = true)
+        } else if (localRes is OpResult.Error) {
+            showMessage(localRes.message, isError = true)
         }
     }
 
     fun cancelBooking(bookingId: String) {
         val user = uiState.currentUser ?: return
+        val cloudTarget = uiState.bookings.firstOrNull { it.bookingId == bookingId }
         when (val res = repo.updateBookingLifecycle(user, bookingId, BookingStatus.CANCELLED)) {
             is OpResult.Success -> {
                 refreshAll()
+                if (uiState.isFirebaseConnected && cloudTarget != null) {
+                    firebaseSync.updateBookingStatus(cloudTarget, BookingStatus.CANCELLED) { _, _ -> }
+                }
                 showMessage("Booking cancelled.")
             }
-            is OpResult.Error -> showMessage(res.message, isError = true)
+            is OpResult.Error -> {
+                if (uiState.isFirebaseConnected && cloudTarget != null) {
+                    firebaseSync.updateBookingStatus(cloudTarget, BookingStatus.CANCELLED) { ok, err ->
+                        showMessage(if (ok) "Booking cancelled live." else "Denied: $err", !ok)
+                    }
+                } else {
+                    showMessage(res.message, isError = true)
+                }
+            }
         }
     }
 
     fun completeBooking(bookingId: String) {
         val user = uiState.currentUser ?: return
+        val cloudTarget = uiState.bookings.firstOrNull { it.bookingId == bookingId }
         when (val res = repo.updateBookingLifecycle(user, bookingId, BookingStatus.COMPLETED)) {
             is OpResult.Success -> {
                 refreshAll()
+                if (uiState.isFirebaseConnected && cloudTarget != null) {
+                    firebaseSync.updateBookingStatus(cloudTarget, BookingStatus.COMPLETED) { _, _ -> }
+                }
                 showMessage("Trip/Stay marked Completed. Tourist can now submit a review!")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -560,6 +652,10 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         )) {
             is OpResult.Success -> {
                 refreshAll()
+                val newest = repo.getVehicles(includeUnapproved = true).firstOrNull { it.title == title.trim() }
+                if (uiState.isFirebaseConnected && newest != null) {
+                    firebaseSync.upsertVehicle(newest) { _, _ -> }
+                }
                 showMessage("Vehicle listing submitted for Admin approval.")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -571,6 +667,10 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         when (val res = repo.updateVehicleListing(user, vehicleId, newTitle, newRate, newArea)) {
             is OpResult.Success -> {
                 refreshAll()
+                val updated = repo.getVehicles(includeUnapproved = true).firstOrNull { it.vehicleId == vehicleId }
+                if (uiState.isFirebaseConnected && updated != null) {
+                    firebaseSync.upsertVehicle(updated) { _, _ -> }
+                }
                 showMessage("Your vehicle listing was updated.")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -582,6 +682,9 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         when (val res = repo.deleteVehicleListing(user, vehicleId)) {
             is OpResult.Success -> {
                 refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.deleteVehicle(vehicleId) { _, _ -> }
+                }
                 showMessage("Your vehicle listing was deleted.")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -630,6 +733,10 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         )) {
             is OpResult.Success -> {
                 refreshAll()
+                val newest = repo.getProperties(includeUnapproved = true).firstOrNull { it.name == name.trim() }
+                if (uiState.isFirebaseConnected && newest != null) {
+                    firebaseSync.upsertProperty(newest) { _, _ -> }
+                }
                 showMessage("Property & room inventory submitted for Admin approval.")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -641,6 +748,10 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         when (val res = repo.updatePropertyListing(user, propertyId, newName, newAmenities)) {
             is OpResult.Success -> {
                 refreshAll()
+                val updated = repo.getProperties(includeUnapproved = true).firstOrNull { it.propertyId == propertyId }
+                if (uiState.isFirebaseConnected && updated != null) {
+                    firebaseSync.upsertProperty(updated) { _, _ -> }
+                }
                 showMessage("Your property listing was updated.")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -754,5 +865,10 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
                 ChatBubble(isUser = true, text = question.trim()) +
                 ChatBubble(isUser = false, text = answer)
         )
+    }
+
+    override fun onCleared() {
+        firebaseSync.stopListeners()
+        super.onCleared()
     }
 }

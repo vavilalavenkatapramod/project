@@ -135,8 +135,9 @@ fun MotoMoveApp(vm: MotoMoveViewModel = viewModel()) {
                     }
                 },
                 actions = {
+                    val cloudLive = state.isFirebaseConnected || state.isLiveConnected
                     Surface(
-                        color = if (state.isLiveConnected) Color(0xFFDCFCE7) else Color(0xFFFEF3C7),
+                        color = if (cloudLive) Color(0xFFDCFCE7) else Color(0xFFFEF3C7),
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier
                             .padding(end = 4.dp)
@@ -151,13 +152,17 @@ fun MotoMoveApp(vm: MotoMoveViewModel = viewModel()) {
                                 modifier = Modifier
                                     .size(8.dp)
                                     .clip(CircleShape)
-                                    .background(if (state.isLiveConnected) Color(0xFF16A34A) else Color(0xFFD97706))
+                                    .background(if (cloudLive) Color(0xFF16A34A) else Color(0xFFD97706))
                             )
                             Text(
-                                if (state.isLiveConnected) "LIVE" else "LOCAL",
+                                when {
+                                    state.isFirebaseConnected -> "CLOUD LIVE"
+                                    state.isLiveConnected -> "SSE LIVE"
+                                    else -> "LOCAL"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = if (state.isLiveConnected) Color(0xFF166534) else Color(0xFF92400E)
+                                color = if (cloudLive) Color(0xFF166534) else Color(0xFF92400E)
                             )
                         }
                     }
@@ -348,24 +353,24 @@ fun MotoMoveApp(vm: MotoMoveViewModel = viewModel()) {
         var urlDraft by remember(state.liveServerUrl) { mutableStateOf(state.liveServerUrl) }
         AlertDialog(
             onDismissRequest = { showLiveDialog = false },
-            title = { Text("Live Multi-Device Sync (SSE)") },
+            title = { Text("Cloud Live Sync (Firebase + SSE)") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        if (state.isLiveConnected) "Status: CONNECTED LIVE — Updates from Drivers, Hotels & Food appear instantly across phones!"
-                        else "Status: Offline/Local Mode. Run 'node server.js' in MotoMoveServer and enter its address below:",
+                        if (state.isFirebaseConnected) "Cloud Firestore Live Sync is ACTIVE over 4G/5G/Wi-Fi! Updates from any Driver, Hotel, or Food spot appear instantly across all devices."
+                        else "Cloud Firestore connects automatically on sign-in. Optional: enter a local Node SSE Server URL below for LAN testing:",
                         style = MaterialTheme.typography.bodySmall
                     )
                     OutlinedTextField(
                         value = urlDraft,
                         onValueChange = { urlDraft = it },
-                        label = { Text("Live Server URL") },
+                        label = { Text("Optional Local SSE URL") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = { urlDraft = "http://10.0.2.2:8080" }) { Text("Emulator") }
-                        OutlinedButton(onClick = { urlDraft = "http://192.168.1.100:8080" }) { Text("Wi-Fi IP") }
+                        OutlinedButton(onClick = { urlDraft = "" }) { Text("Firebase Cloud Only") }
+                        OutlinedButton(onClick = { urlDraft = "http://10.0.2.2:8080" }) { Text("Emulator SSE") }
                     }
                 }
             },
@@ -373,7 +378,7 @@ fun MotoMoveApp(vm: MotoMoveViewModel = viewModel()) {
                 Button(onClick = {
                     vm.setLiveServerUrl(urlDraft)
                     showLiveDialog = false
-                }) { Text("Connect Live") }
+                }) { Text("Save") }
             },
             dismissButton = { TextButton(onClick = { showLiveDialog = false }) { Text("Close") } }
         )

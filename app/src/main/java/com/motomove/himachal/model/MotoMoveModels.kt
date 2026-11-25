@@ -120,7 +120,8 @@ data class VehicleListing(
     val providerVerification: VerificationStatus,
     val lastUpdatedAt: Long,
     val isAvailableNow: Boolean = true,
-    val liveStatusNote: String = "Available for pickup"
+    val liveStatusNote: String = "Available for pickup",
+    val ownerUid: String = ""
 )
 
 data class DriverProfile(
@@ -137,7 +138,8 @@ data class DriverProfile(
     val verificationStatus: VerificationStatus,
     val approvalStatus: ListingApprovalStatus,
     val lastUpdatedAt: Long,
-    val isAvailableNow: Boolean = true
+    val isAvailableNow: Boolean = true,
+    val ownerUid: String = ""
 )
 
 data class VerificationDocument(
@@ -164,7 +166,8 @@ data class PropertyListing(
     val registrationNumber: String,
     val approvalStatus: ListingApprovalStatus,
     val providerVerification: VerificationStatus,
-    val lastUpdatedAt: Long
+    val lastUpdatedAt: Long,
+    val ownerUid: String = ""
 )
 
 data class RoomType(
@@ -173,7 +176,8 @@ data class RoomType(
     val name: String,
     val occupancy: Int,
     val ratePerNightInr: Int,
-    val inventoryCount: Int
+    val inventoryCount: Int,
+    val ownerUid: String = ""
 )
 
 data class DiningSpot(
@@ -188,7 +192,8 @@ data class DiningSpot(
     val isFssaiVerified: Boolean,
     val rating: Double,
     val isOpenNow: Boolean = true,
-    val liveStatusNote: String = "Tables open now"
+    val liveStatusNote: String = "Tables open now",
+    val ownerUid: String = ""
 )
 
 data class TravelReel(
@@ -229,7 +234,9 @@ data class Booking(
     val quotedPriceInr: Int,
     val cancellationTerms: String,
     val createdAt: Long,
-    val respondedAt: Long? = null
+    val respondedAt: Long? = null,
+    val touristUid: String = "",
+    val ownerUid: String = ""
 )
 
 data class Review(

@@ -1,0 +1,748 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model (MotoMove Himachal Pradesh - Standard Firestore)
+// ===============================================================
+//
+// Collection: users
+// Document ID: {userId} (matches Firebase Auth UID)
+// Fields:
+//   - userId: string (required, immutable, == userId, 1..128 chars)
+//   - name: string (required, 1..100 chars)
+//   - contact: string (optional, 1..120 chars)
+//   - email: string (optional, valid email, <= 120 chars)
+//   - phone: string (optional, 7..20 chars)
+//   - role: string (required, immutable; on create in ['TOURIST', 'VEHICLE_OWNER', 'LOCAL_DRIVER', 'ACCOMMODATION_PROVIDER']; 'ADMINISTRATOR' provisioned out-of-band)
+//   - accountStatus: string (optional, in ['ACTIVE', 'SUSPENDED'], immutable for self-updates)
+//   - homeCluster: string (optional, 1..120 chars)
+//   - fcmToken: string (optional, 1..512 chars)
+//   - createdAt: int | timestamp (optional, immutable if set)
+//   - updatedAt: int | timestamp (optional)
+//
+// Collection: vehicles
+// Document ID: {vehicleId}
+// Fields:
+//   - ownerUid: string (required, immutable, == request.auth.uid on create, 1..128 chars)
+//   - vehicleId, providerId: string (optional, 1..128 chars)
+//   - ownerName: string (optional, 1..100 chars)
+//   - title: string (required, 1..150 chars)
+//   - vehicleType: string (optional, 1..80 chars)
+//   - capacity: int (required, 1..60)
+//   - transmissionFuel: string (optional, 1..80 chars)
+//   - serviceArea: string (optional, 1..300 chars)
+//   - pickupHubs: list<string> (optional, <= 20 items)
+//   - rentalMode: string (optional, in ['WITH_DRIVER', 'SELF_DRIVE', 'BOTH'])
+//   - rateInr: int (required, 1..1000000)
+//   - rateBasis: string (optional, 1..40 chars)
+//   - cancellationTerms: string (optional, 1..500 chars)
+//   - approvalStatus: string (optional, in ['PENDING_REVIEW', 'APPROVED', 'SUSPENDED', 'CORRECTION_REQUESTED']; admin-controlled)
+//   - providerVerification: string (optional, in ['PENDING', 'VERIFIED', 'REJECTED', 'EXPIRED']; admin-controlled)
+//   - isAvailableNow: bool (optional)
+//   - liveStatusNote: string (optional, 0..200 chars)
+//   - lastUpdatedAt, createdAt, updatedAt: int | timestamp (optional)
+//
+// Collection: drivers
+// Document ID: {driverId}
+// Fields:
+//   - ownerUid: string (required, immutable, == request.auth.uid on create, 1..128 chars)
+//   - driverId, providerId: string (optional, 1..128 chars)
+//   - name: string (required, 1..100 chars)
+//   - languages: string (optional, 1..200 chars)
+//   - experienceYears: int (optional, 0..80)
+//   - serviceArea: string (optional, 1..300 chars)
+//   - pickupHubs: list<string> (optional, <= 20 items)
+//   - ratePerDayInr: int (required, 1..1000000)
+//   - availabilitySummary: string (optional, 0..200 chars)
+//   - cancellationTerms: string (optional, 1..500 chars)
+//   - verificationStatus: string (optional, in ['PENDING', 'VERIFIED', 'REJECTED', 'EXPIRED']; admin-controlled)
+//   - approvalStatus: string (optional, in ['PENDING_REVIEW', 'APPROVED', 'SUSPENDED', 'CORRECTION_REQUESTED']; admin-controlled)
+//   - isAvailableNow: bool (optional)
+//   - lastUpdatedAt, createdAt, updatedAt: int | timestamp (optional)
+//
+// Collection: properties
+// Document ID: {propertyId}
+// Fields:
+//   - ownerUid: string (required, immutable, == request.auth.uid on create, 1..128 chars)
+//   - propertyId, providerId: string (optional, 1..128 chars)
+//   - hostName: string (optional, 1..100 chars)
+//   - name: string (required, 1..150 chars)
+//   - propertyType: string (optional, 1..60 chars)
+//   - locationCluster: string (optional, 1..120 chars)
+//   - nearestHubCode: string (optional, 1..20 chars)
+//   - amenities, policies: string (optional, 0..500 chars)
+//   - registrationNumber: string (optional, 0..80 chars)
+//   - approvalStatus: string (optional, in ['PENDING_REVIEW', 'APPROVED', 'SUSPENDED', 'CORRECTION_REQUESTED']; admin-controlled)
+//   - providerVerification: string (optional, in ['PENDING', 'VERIFIED', 'REJECTED', 'EXPIRED']; admin-controlled)
+//   - lastUpdatedAt, createdAt, updatedAt: int | timestamp (optional)
+//
+// Collection: rooms
+// Document ID: {roomId}
+// Fields:
+//   - ownerUid: string (required, immutable, == request.auth.uid on create, 1..128 chars)
+//   - roomId, roomTypeId, propertyId: string (optional, 1..128 chars)
+//   - name: string (required, 1..120 chars)
+//   - occupancy: int (optional, 1..50)
+//   - ratePerNightInr: int (required, 1..1000000)
+//   - inventoryCount: int (required, 0..1000)
+//   - createdAt, updatedAt: int | timestamp (optional)
+//
+// Collection: diningSpots
+// Document ID: {spotId}
+// Fields:
+//   - ownerUid: string (required, immutable, == request.auth.uid on create, 1..128 chars)
+//   - spotId, providerId: string (optional, 1..128 chars)
+//   - name: string (required, 1..120 chars)
+//   - locationCluster: string (optional, 1..120 chars)
+//   - specialty: string (optional, 1..120 chars)
+//   - dishes: string (optional, 0..500 chars)
+//   - ambience: string (optional, 0..200 chars)
+//   - avgCostInr: int (required, 1..100000)
+//   - isFssaiVerified, isOpenNow: bool (optional)
+//   - rating: number (optional, 0..5)
+//   - liveStatusNote: string (optional, 0..200 chars)
+//   - createdAt, updatedAt: int | timestamp (optional)
+//
+// Collection: bookings
+// Document ID: {bookingId}
+// Fields:
+//   - touristUid: string (required, immutable, == request.auth.uid on create, 1..128 chars)
+//   - ownerUid: string (required, immutable, 1..128 chars)
+//   - status: string (required, on create in ['PENDING', 'ACCEPTED']; state-machine enforced on update)
+//   - guestOrSeatCount: int (required, immutable, 1..100)
+//   - quotedPriceInr: int (required, immutable, 0..10000000)
+//   - bookingId, providerId, listingId: string (optional, immutable, 1..128 chars)
+//   - touristName, listingTitle: string (optional, immutable, 1..150 chars)
+//   - bookingType: string (optional, immutable, in ['HUB_PICKUP', 'LOCAL_MOBILITY', 'STAY', 'DINING'])
+//   - pickupHubCode, trainOrFlightNo: string | null (optional, 0..40 chars)
+//   - destinationCluster: string (optional, 1..120 chars)
+//   - pickupNotes, cancellationTerms: string (optional, 0..500 chars)
+//   - startEpochDay, endEpochDay: int (optional, immutable, >= 0)
+//   - slot: string (optional, immutable, in ['MORNING_06_12', 'AFTERNOON_12_18', 'EVENING_18_24', 'FULL_DAY'])
+//   - createdAt: int | timestamp (optional, immutable)
+//   - respondedAt, updatedAt: int | timestamp | null (optional)
+//
+// Collection: notifications
+// Document ID: {notificationId}
+// Fields:
+//   - userUid: string (required, immutable, 1..128 chars)
+//   - message: string (required, <= 500 chars)
+//   - notificationId: string (optional, 1..128 chars)
+//   - category: string (optional, in ['TRIPS', 'DEALS', 'AI_TIPS'])
+//   - eventType: string (optional, 1..80 chars)
+//   - isRead: bool (optional; only field mutable on update by recipient)
+//   - createdAt: int | timestamp (optional)
+//
+// Collection: reviews
+// Document ID: {reviewId}
+// Fields (create-only / immutable):
+//   - touristUid: string (required, == request.auth.uid, 1..128 chars)
+//   - rating: int (required, 1..5)
+//   - reviewId, bookingId, listingId: string (optional, 1..128 chars)
+//   - touristName: string (optional, 1..100 chars)
+//   - comment: string (optional, 0..1000 chars)
+//   - moderationStatus: string (optional, 'VISIBLE' on create)
+//   - createdAt: int | timestamp (optional)
+//
+// Collection: verificationDocs
+// Document ID: {docId}
+// Fields:
+//   - ownerUid: string (required, immutable, == request.auth.uid on create, 1..128 chars)
+//   - documentId, providerId: string (optional, 1..128 chars)
+//   - providerName: string (optional, 1..100 chars)
+//   - documentType: string (optional, 1..80 chars)
+//   - fileReference: string (optional, 1..500 chars)
+//   - reviewStatus: string (optional, in ['PENDING', 'VERIFIED', 'REJECTED', 'EXPIRED']; 'PENDING' on non-admin create, admin-only update)
+//   - expiryDate: string (optional, 0..32 chars)
+//   - reviewerNotes: string (optional, 0..500 chars)
+//   - createdAt, updatedAt: int | timestamp (optional)
+//
+// Collection: auditLogs
+// Document ID: {auditId}
+// Fields (admin-read, append-only):
+//   - actorUid: string (required, == request.auth.uid, 1..128 chars)
+//   - auditId, targetId: string (optional, 1..128 chars)
+//   - actorRole: string (optional, 1..50 chars)
+//   - action: string (optional, 1..100 chars)
+//   - details: string (optional, 0..1000 chars)
+//   - timestamp, createdAt: int | timestamp (optional)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAuthenticated() {
+      return isSignedIn();
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        userDoc().role == 'ADMINISTRATOR';
+    }
+
+    function hasRole(r) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        userDoc().role == r;
+    }
+
+    function uidUnchanged() {
+      return !('ownerUid' in request.resource.data) ||
+        request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('ownerUid' in request.resource.data) ||
+        request.resource.data.ownerUid == resource.data.ownerUid;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    function validStringLength(data, field, minLen, maxLen) {
+      return data[field] is string &&
+        data[field].size() >= minLen &&
+        data[field].size() <= maxLen;
+    }
+
+    function isValidOptionalString(data, field, minLen, maxLen) {
+      return !(field in data) ||
+        (data[field] is string &&
+          data[field].size() >= minLen &&
+          data[field].size() <= maxLen);
+    }
+
+    function isValidNullableString(data, field, minLen, maxLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is string &&
+          data[field].size() >= minLen &&
+          data[field].size() <= maxLen);
+    }
+
+    function isValidEmail(email) {
+      return email is string &&
+        email.size() <= 120 &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidTimeValue(val) {
+      return (val is int && val >= 0) || val is timestamp;
+    }
+
+    function isValidOptionalTime(data, field) {
+      return !(field in data) || isValidTimeValue(data[field]);
+    }
+
+    function isValidNullableTime(data, field) {
+      return !(field in data) || data[field] == null || isValidTimeValue(data[field]);
+    }
+
+    function isValidStringList(list, maxItems, maxItemLen) {
+      return list is list &&
+        list.size() <= maxItems &&
+        (list.size() == 0 ||
+          (list[0] is string && list[0].size() >= 1 && list[0].size() <= maxItemLen));
+    }
+
+    // ===============================================================
+    // Domain Validators (Used in BOTH create and update)
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasRequiredFields(['userId', 'name', 'role']) &&
+        hasOnlyAllowedFields([
+          'userId', 'name', 'contact', 'email', 'phone',
+          'role', 'accountStatus', 'homeCluster', 'fcmToken',
+          'createdAt', 'updatedAt'
+        ]) &&
+        validStringLength(data, 'userId', 1, 128) &&
+        validStringLength(data, 'name', 1, 100) &&
+        isValidOptionalString(data, 'contact', 1, 120) &&
+        (!('email' in data) || isValidEmail(data.email)) &&
+        isValidOptionalString(data, 'phone', 7, 20) &&
+        data.role in ['TOURIST', 'VEHICLE_OWNER', 'LOCAL_DRIVER', 'ACCOMMODATION_PROVIDER', 'ADMINISTRATOR'] &&
+        (!('accountStatus' in data) || data.accountStatus in ['ACTIVE', 'SUSPENDED']) &&
+        isValidOptionalString(data, 'homeCluster', 1, 120) &&
+        isValidOptionalString(data, 'fcmToken', 1, 512) &&
+        isValidOptionalTime(data, 'createdAt') &&
+        isValidOptionalTime(data, 'updatedAt');
+    }
+
+    function isValidVehicle(data) {
+      return hasRequiredFields(['ownerUid', 'title', 'rateInr', 'capacity']) &&
+        hasOnlyAllowedFields([
+          'vehicleId', 'providerId', 'ownerUid', 'ownerName',
+          'title', 'vehicleType', 'capacity', 'transmissionFuel',
+          'serviceArea', 'pickupHubs', 'rentalMode', 'rateInr',
+          'rateBasis', 'cancellationTerms', 'approvalStatus',
+          'providerVerification', 'isAvailableNow', 'liveStatusNote',
+          'lastUpdatedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        validStringLength(data, 'ownerUid', 1, 128) &&
+        isValidOptionalString(data, 'vehicleId', 1, 128) &&
+        isValidOptionalString(data, 'providerId', 1, 128) &&
+        isValidOptionalString(data, 'ownerName', 1, 100) &&
+        validStringLength(data, 'title', 1, 150) &&
+        isValidOptionalString(data, 'vehicleType', 1, 80) &&
+        data.capacity is int && data.capacity > 0 && data.capacity <= 60 &&
+        isValidOptionalString(data, 'transmissionFuel', 1, 80) &&
+        isValidOptionalString(data, 'serviceArea', 1, 300) &&
+        (!('pickupHubs' in data) || isValidStringList(data.pickupHubs, 20, 20)) &&
+        (!('rentalMode' in data) || data.rentalMode in ['WITH_DRIVER', 'SELF_DRIVE', 'BOTH']) &&
+        data.rateInr is int && data.rateInr > 0 && data.rateInr <= 1000000 &&
+        isValidOptionalString(data, 'rateBasis', 1, 40) &&
+        isValidOptionalString(data, 'cancellationTerms', 0, 500) &&
+        (!('approvalStatus' in data) || data.approvalStatus in ['PENDING_REVIEW', 'APPROVED', 'SUSPENDED', 'CORRECTION_REQUESTED']) &&
+        (!('providerVerification' in data) || data.providerVerification in ['PENDING', 'VERIFIED', 'REJECTED', 'EXPIRED']) &&
+        (!('isAvailableNow' in data) || data.isAvailableNow is bool) &&
+        isValidOptionalString(data, 'liveStatusNote', 0, 200) &&
+        isValidOptionalTime(data, 'lastUpdatedAt') &&
+        isValidOptionalTime(data, 'createdAt') &&
+        isValidOptionalTime(data, 'updatedAt');
+    }
+
+    function isValidDriver(data) {
+      return hasRequiredFields(['ownerUid', 'name', 'ratePerDayInr']) &&
+        hasOnlyAllowedFields([
+          'driverId', 'providerId', 'ownerUid', 'name',
+          'languages', 'experienceYears', 'serviceArea', 'pickupHubs',
+          'ratePerDayInr', 'availabilitySummary', 'cancellationTerms',
+          'verificationStatus', 'approvalStatus', 'isAvailableNow',
+          'lastUpdatedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        validStringLength(data, 'ownerUid', 1, 128) &&
+        isValidOptionalString(data, 'driverId', 1, 128) &&
+        isValidOptionalString(data, 'providerId', 1, 128) &&
+        validStringLength(data, 'name', 1, 100) &&
+        isValidOptionalString(data, 'languages', 1, 200) &&
+        (!('experienceYears' in data) || (data.experienceYears is int && data.experienceYears >= 0 && data.experienceYears <= 80)) &&
+        isValidOptionalString(data, 'serviceArea', 1, 300) &&
+        (!('pickupHubs' in data) || isValidStringList(data.pickupHubs, 20, 20)) &&
+        data.ratePerDayInr is int && data.ratePerDayInr > 0 && data.ratePerDayInr <= 1000000 &&
+        isValidOptionalString(data, 'availabilitySummary', 0, 200) &&
+        isValidOptionalString(data, 'cancellationTerms', 0, 500) &&
+        (!('verificationStatus' in data) || data.verificationStatus in ['PENDING', 'VERIFIED', 'REJECTED', 'EXPIRED']) &&
+        (!('approvalStatus' in data) || data.approvalStatus in ['PENDING_REVIEW', 'APPROVED', 'SUSPENDED', 'CORRECTION_REQUESTED']) &&
+        (!('isAvailableNow' in data) || data.isAvailableNow is bool) &&
+        isValidOptionalTime(data, 'lastUpdatedAt') &&
+        isValidOptionalTime(data, 'createdAt') &&
+        isValidOptionalTime(data, 'updatedAt');
+    }
+
+    function isValidProperty(data) {
+      return hasRequiredFields(['ownerUid', 'name']) &&
+        hasOnlyAllowedFields([
+          'propertyId', 'providerId', 'ownerUid', 'hostName',
+          'name', 'propertyType', 'locationCluster', 'nearestHubCode',
+          'amenities', 'policies', 'registrationNumber',
+          'approvalStatus', 'providerVerification',
+          'lastUpdatedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        validStringLength(data, 'ownerUid', 1, 128) &&
+        isValidOptionalString(data, 'propertyId', 1, 128) &&
+        isValidOptionalString(data, 'providerId', 1, 128) &&
+        isValidOptionalString(data, 'hostName', 1, 100) &&
+        validStringLength(data, 'name', 1, 150) &&
+        isValidOptionalString(data, 'propertyType', 1, 60) &&
+        isValidOptionalString(data, 'locationCluster', 1, 120) &&
+        isValidOptionalString(data, 'nearestHubCode', 1, 20) &&
+        isValidOptionalString(data, 'amenities', 0, 500) &&
+        isValidOptionalString(data, 'policies', 0, 500) &&
+        isValidOptionalString(data, 'registrationNumber', 0, 80) &&
+        (!('approvalStatus' in data) || data.approvalStatus in ['PENDING_REVIEW', 'APPROVED', 'SUSPENDED', 'CORRECTION_REQUESTED']) &&
+        (!('providerVerification' in data) || data.providerVerification in ['PENDING', 'VERIFIED', 'REJECTED', 'EXPIRED']) &&
+        isValidOptionalTime(data, 'lastUpdatedAt') &&
+        isValidOptionalTime(data, 'createdAt') &&
+        isValidOptionalTime(data, 'updatedAt');
+    }
+
+    function isValidRoom(data) {
+      return hasRequiredFields(['ownerUid', 'name', 'inventoryCount', 'ratePerNightInr']) &&
+        hasOnlyAllowedFields([
+          'roomId', 'roomTypeId', 'propertyId', 'ownerUid',
+          'name', 'occupancy', 'ratePerNightInr', 'inventoryCount',
+          'createdAt', 'updatedAt'
+        ]) &&
+        validStringLength(data, 'ownerUid', 1, 128) &&
+        isValidOptionalString(data, 'roomId', 1, 128) &&
+        isValidOptionalString(data, 'roomTypeId', 1, 128) &&
+        isValidOptionalString(data, 'propertyId', 1, 128) &&
+        validStringLength(data, 'name', 1, 120) &&
+        (!('occupancy' in data) || (data.occupancy is int && data.occupancy > 0 && data.occupancy <= 50)) &&
+        data.ratePerNightInr is int && data.ratePerNightInr > 0 && data.ratePerNightInr <= 1000000 &&
+        data.inventoryCount is int && data.inventoryCount >= 0 && data.inventoryCount <= 1000 &&
+        isValidOptionalTime(data, 'createdAt') &&
+        isValidOptionalTime(data, 'updatedAt');
+    }
+
+    function isValidDiningSpot(data) {
+      return hasRequiredFields(['ownerUid', 'name', 'avgCostInr']) &&
+        hasOnlyAllowedFields([
+          'spotId', 'providerId', 'ownerUid', 'name',
+          'locationCluster', 'specialty', 'dishes', 'ambience',
+          'avgCostInr', 'isFssaiVerified', 'rating', 'isOpenNow',
+          'liveStatusNote', 'createdAt', 'updatedAt'
+        ]) &&
+        validStringLength(data, 'ownerUid', 1, 128) &&
+        isValidOptionalString(data, 'spotId', 1, 128) &&
+        isValidOptionalString(data, 'providerId', 1, 128) &&
+        validStringLength(data, 'name', 1, 120) &&
+        isValidOptionalString(data, 'locationCluster', 1, 120) &&
+        isValidOptionalString(data, 'specialty', 1, 120) &&
+        isValidOptionalString(data, 'dishes', 0, 500) &&
+        isValidOptionalString(data, 'ambience', 0, 200) &&
+        data.avgCostInr is int && data.avgCostInr > 0 && data.avgCostInr <= 100000 &&
+        (!('isFssaiVerified' in data) || data.isFssaiVerified is bool) &&
+        (!('rating' in data) || (data.rating is number && data.rating >= 0 && data.rating <= 5)) &&
+        (!('isOpenNow' in data) || data.isOpenNow is bool) &&
+        isValidOptionalString(data, 'liveStatusNote', 0, 200) &&
+        isValidOptionalTime(data, 'createdAt') &&
+        isValidOptionalTime(data, 'updatedAt');
+    }
+
+    function isValidBooking(data) {
+      return hasRequiredFields(['touristUid', 'ownerUid', 'status', 'guestOrSeatCount', 'quotedPriceInr']) &&
+        hasOnlyAllowedFields([
+          'bookingId', 'touristUid', 'touristName', 'ownerUid',
+          'providerId', 'listingId', 'listingTitle', 'bookingType',
+          'pickupHubCode', 'destinationCluster', 'trainOrFlightNo',
+          'pickupNotes', 'startEpochDay', 'endEpochDay', 'slot',
+          'guestOrSeatCount', 'status', 'quotedPriceInr',
+          'cancellationTerms', 'createdAt', 'respondedAt', 'updatedAt'
+        ]) &&
+        validStringLength(data, 'touristUid', 1, 128) &&
+        validStringLength(data, 'ownerUid', 1, 128) &&
+        isValidOptionalString(data, 'bookingId', 1, 128) &&
+        isValidOptionalString(data, 'touristName', 1, 100) &&
+        isValidOptionalString(data, 'providerId', 1, 128) &&
+        isValidOptionalString(data, 'listingId', 1, 128) &&
+        isValidOptionalString(data, 'listingTitle', 1, 150) &&
+        (!('bookingType' in data) || data.bookingType in ['HUB_PICKUP', 'LOCAL_MOBILITY', 'STAY', 'DINING']) &&
+        isValidNullableString(data, 'pickupHubCode', 0, 40) &&
+        isValidOptionalString(data, 'destinationCluster', 1, 120) &&
+        isValidNullableString(data, 'trainOrFlightNo', 0, 40) &&
+        isValidOptionalString(data, 'pickupNotes', 0, 500) &&
+        (!('startEpochDay' in data) || (data.startEpochDay is int && data.startEpochDay >= 0)) &&
+        (!('endEpochDay' in data) || (data.endEpochDay is int && data.endEpochDay >= 0)) &&
+        (!('startEpochDay' in data) || !('endEpochDay' in data) || data.endEpochDay >= data.startEpochDay) &&
+        (!('slot' in data) || data.slot in ['MORNING_06_12', 'AFTERNOON_12_18', 'EVENING_18_24', 'FULL_DAY']) &&
+        data.guestOrSeatCount is int && data.guestOrSeatCount > 0 && data.guestOrSeatCount <= 100 &&
+        data.status in ['PENDING', 'ACCEPTED', 'REJECTED', 'CANCELLED', 'COMPLETED', 'EXPIRED'] &&
+        data.quotedPriceInr is int && data.quotedPriceInr >= 0 && data.quotedPriceInr <= 10000000 &&
+        isValidOptionalString(data, 'cancellationTerms', 0, 500) &&
+        isValidOptionalTime(data, 'createdAt') &&
+        isValidNullableTime(data, 'respondedAt') &&
+        isValidOptionalTime(data, 'updatedAt');
+    }
+
+    function isValidNotification(data) {
+      return hasRequiredFields(['userUid', 'message']) &&
+        hasOnlyAllowedFields([
+          'notificationId', 'userUid', 'category', 'eventType',
+          'message', 'isRead', 'createdAt'
+        ]) &&
+        validStringLength(data, 'userUid', 1, 128) &&
+        isValidOptionalString(data, 'notificationId', 1, 128) &&
+        (!('category' in data) || data.category in ['TRIPS', 'DEALS', 'AI_TIPS']) &&
+        isValidOptionalString(data, 'eventType', 1, 80) &&
+        data.message is string && data.message.size() <= 500 &&
+        (!('isRead' in data) || data.isRead is bool) &&
+        isValidOptionalTime(data, 'createdAt');
+    }
+
+    function isValidReview(data) {
+      return hasRequiredFields(['touristUid', 'rating']) &&
+        hasOnlyAllowedFields([
+          'reviewId', 'bookingId', 'touristUid', 'touristName',
+          'listingId', 'rating', 'comment', 'moderationStatus',
+          'createdAt'
+        ]) &&
+        validStringLength(data, 'touristUid', 1, 128) &&
+        isValidOptionalString(data, 'reviewId', 1, 128) &&
+        isValidOptionalString(data, 'bookingId', 1, 128) &&
+        isValidOptionalString(data, 'touristName', 1, 100) &&
+        isValidOptionalString(data, 'listingId', 1, 128) &&
+        data.rating is int && data.rating >= 1 && data.rating <= 5 &&
+        isValidOptionalString(data, 'comment', 0, 1000) &&
+        (!('moderationStatus' in data) || data.moderationStatus in ['VISIBLE', 'HIDDEN', 'FLAGGED']) &&
+        isValidOptionalTime(data, 'createdAt');
+    }
+
+    function isValidVerificationDoc(data) {
+      return hasRequiredFields(['ownerUid']) &&
+        hasOnlyAllowedFields([
+          'documentId', 'providerId', 'ownerUid', 'providerName',
+          'documentType', 'fileReference', 'reviewStatus',
+          'expiryDate', 'reviewerNotes', 'createdAt', 'updatedAt'
+        ]) &&
+        validStringLength(data, 'ownerUid', 1, 128) &&
+        isValidOptionalString(data, 'documentId', 1, 128) &&
+        isValidOptionalString(data, 'providerId', 1, 128) &&
+        isValidOptionalString(data, 'providerName', 1, 100) &&
+        isValidOptionalString(data, 'documentType', 1, 80) &&
+        isValidOptionalString(data, 'fileReference', 1, 500) &&
+        (!('reviewStatus' in data) || data.reviewStatus in ['PENDING', 'VERIFIED', 'REJECTED', 'EXPIRED']) &&
+        isValidOptionalString(data, 'expiryDate', 0, 32) &&
+        isValidOptionalString(data, 'reviewerNotes', 0, 500) &&
+        isValidOptionalTime(data, 'createdAt') &&
+        isValidOptionalTime(data, 'updatedAt');
+    }
+
+    function isValidAuditLog(data) {
+      return hasRequiredFields(['actorUid']) &&
+        hasOnlyAllowedFields([
+          'auditId', 'actorUid', 'actorRole', 'action',
+          'targetId', 'details', 'timestamp', 'createdAt'
+        ]) &&
+        validStringLength(data, 'actorUid', 1, 128) &&
+        isValidOptionalString(data, 'auditId', 1, 128) &&
+        isValidOptionalString(data, 'actorRole', 1, 50) &&
+        isValidOptionalString(data, 'action', 1, 100) &&
+        isValidOptionalString(data, 'targetId', 1, 128) &&
+        isValidOptionalString(data, 'details', 0, 1000) &&
+        isValidOptionalTime(data, 'timestamp') &&
+        isValidOptionalTime(data, 'createdAt');
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Users: strict PII isolation; self-registration excludes ADMINISTRATOR; role & userId immutable
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if isSignedIn() &&
+        request.auth.uid == userId &&
+        request.resource.data.userId == userId &&
+        request.resource.data.role in ['TOURIST', 'VEHICLE_OWNER', 'LOCAL_DRIVER', 'ACCOMMODATION_PROVIDER'] &&
+        (!('accountStatus' in request.resource.data) || request.resource.data.accountStatus == 'ACTIVE') &&
+        isValidUser(request.resource.data);
+      allow update: if isSignedIn() &&
+        request.auth.uid == userId &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.userId == resource.data.userId &&
+        areImmutableFieldsUnchanged(['userId', 'role', 'accountStatus', 'createdAt']) &&
+        isValidUser(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Vehicles: authenticated read; owner-scoped create/delete; owner or admin update (non-admin cannot self-approve)
+    match /vehicles/{vehicleId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.rateInr is int &&
+        request.resource.data.rateInr > 0 &&
+        request.resource.data.capacity is int &&
+        request.resource.data.capacity > 0 &&
+        (!('approvalStatus' in request.resource.data) || request.resource.data.approvalStatus == 'PENDING_REVIEW' || isAdmin()) &&
+        (!('providerVerification' in request.resource.data) || request.resource.data.providerVerification == 'PENDING' || isAdmin()) &&
+        isValidVehicle(request.resource.data);
+      allow update: if isSignedIn() &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        (
+          (resource.data.ownerUid == request.auth.uid &&
+            areImmutableFieldsUnchanged(['ownerUid', 'approvalStatus', 'providerVerification', 'createdAt'])) ||
+          isAdmin()
+        ) &&
+        isValidVehicle(request.resource.data);
+      allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Drivers: authenticated read; owner-scoped create/delete; owner or admin update (non-admin cannot self-verify)
+    match /drivers/{driverId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.ratePerDayInr is int &&
+        request.resource.data.ratePerDayInr > 0 &&
+        (!('verificationStatus' in request.resource.data) || request.resource.data.verificationStatus == 'PENDING' || isAdmin()) &&
+        (!('approvalStatus' in request.resource.data) || request.resource.data.approvalStatus == 'PENDING_REVIEW' || isAdmin()) &&
+        isValidDriver(request.resource.data);
+      allow update: if isSignedIn() &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        (
+          (resource.data.ownerUid == request.auth.uid &&
+            areImmutableFieldsUnchanged(['ownerUid', 'verificationStatus', 'approvalStatus', 'createdAt'])) ||
+          isAdmin()
+        ) &&
+        isValidDriver(request.resource.data);
+      allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Properties: authenticated read; owner-scoped create/delete; owner or admin update (non-admin cannot self-approve)
+    match /properties/{propertyId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        (!('approvalStatus' in request.resource.data) || request.resource.data.approvalStatus == 'PENDING_REVIEW' || isAdmin()) &&
+        (!('providerVerification' in request.resource.data) || request.resource.data.providerVerification == 'PENDING' || isAdmin()) &&
+        isValidProperty(request.resource.data);
+      allow update: if isSignedIn() &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        (
+          (resource.data.ownerUid == request.auth.uid &&
+            areImmutableFieldsUnchanged(['ownerUid', 'approvalStatus', 'providerVerification', 'createdAt'])) ||
+          isAdmin()
+        ) &&
+        isValidProperty(request.resource.data);
+      allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Rooms: authenticated read; strict owner-only create/update/delete
+    match /rooms/{roomId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.inventoryCount is int &&
+        request.resource.data.inventoryCount >= 0 &&
+        request.resource.data.ratePerNightInr is int &&
+        request.resource.data.ratePerNightInr > 0 &&
+        isValidRoom(request.resource.data);
+      allow update: if isSignedIn() &&
+        resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        request.resource.data.inventoryCount is int &&
+        request.resource.data.inventoryCount >= 0 &&
+        areImmutableFieldsUnchanged(['ownerUid', 'createdAt']) &&
+        isValidRoom(request.resource.data);
+      allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Dining Spots: authenticated read; strict owner-only create/update/delete
+    match /diningSpots/{spotId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.avgCostInr is int &&
+        request.resource.data.avgCostInr > 0 &&
+        isValidDiningSpot(request.resource.data);
+      allow update: if isSignedIn() &&
+        resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        areImmutableFieldsUnchanged(['ownerUid', 'createdAt']) &&
+        isValidDiningSpot(request.resource.data);
+      allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Bookings: participant or admin read; tourist create; strict state-machine update; no delete
+    match /bookings/{bookingId} {
+      allow read: if isSignedIn() &&
+        (resource.data.touristUid == request.auth.uid ||
+         resource.data.ownerUid == request.auth.uid ||
+         isAdmin());
+      allow create: if isSignedIn() &&
+        request.resource.data.touristUid == request.auth.uid &&
+        request.resource.data.status in ['PENDING', 'ACCEPTED'] &&
+        request.resource.data.guestOrSeatCount is int &&
+        request.resource.data.guestOrSeatCount > 0 &&
+        isValidBooking(request.resource.data);
+      allow update: if isSignedIn() &&
+        request.resource.data.touristUid == resource.data.touristUid &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        request.resource.data.quotedPriceInr == resource.data.quotedPriceInr &&
+        areImmutableFieldsUnchanged([
+          'bookingId', 'touristUid', 'touristName', 'ownerUid',
+          'providerId', 'listingId', 'listingTitle', 'bookingType',
+          'startEpochDay', 'endEpochDay', 'slot', 'guestOrSeatCount',
+          'quotedPriceInr', 'createdAt'
+        ]) &&
+        (
+          (resource.data.touristUid == request.auth.uid &&
+            resource.data.status in ['PENDING', 'ACCEPTED'] &&
+            request.resource.data.status == 'CANCELLED') ||
+          (resource.data.ownerUid == request.auth.uid &&
+            resource.data.status == 'PENDING' &&
+            request.resource.data.status in ['ACCEPTED', 'REJECTED']) ||
+          (resource.data.ownerUid == request.auth.uid &&
+            resource.data.status == 'ACCEPTED' &&
+            request.resource.data.status == 'COMPLETED')
+        ) &&
+        isValidBooking(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Notifications: recipient read/delete; recipient can only mark isRead; bounded message on create
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && resource.data.userUid == request.auth.uid;
+      allow create: if isSignedIn() &&
+        request.resource.data.message is string &&
+        request.resource.data.message.size() <= 500 &&
+        isValidNotification(request.resource.data);
+      allow update: if isSignedIn() &&
+        resource.data.userUid == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']) &&
+        isValidNotification(request.resource.data);
+      allow delete: if isSignedIn() && resource.data.userUid == request.auth.uid;
+    }
+
+    // Reviews: authenticated read; tourist create with 1..5 rating; immutable (no update/delete)
+    match /reviews/{reviewId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.touristUid == request.auth.uid &&
+        request.resource.data.rating is int &&
+        request.resource.data.rating >= 1 &&
+        request.resource.data.rating <= 5 &&
+        (!('moderationStatus' in request.resource.data) || request.resource.data.moderationStatus == 'VISIBLE') &&
+        isValidReview(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // Verification Docs: owner or admin read; owner create (PENDING); admin-only update; no delete
+    match /verificationDocs/{docId} {
+      allow read: if isSignedIn() &&
+        (resource.data.ownerUid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        (!('reviewStatus' in request.resource.data) || request.resource.data.reviewStatus == 'PENDING' || isAdmin()) &&
+        isValidVerificationDoc(request.resource.data);
+      allow update: if isAdmin() &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        areImmutableFieldsUnchanged(['ownerUid', 'createdAt']) &&
+        isValidVerificationDoc(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Audit Logs: admin read; authenticated actor create; immutable (no update/delete)
+    match /auditLogs/{auditId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn() &&
+        request.resource.data.actorUid == request.auth.uid &&
+        isValidAuditLog(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // Default deny-all fallback for any unmatched path
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
