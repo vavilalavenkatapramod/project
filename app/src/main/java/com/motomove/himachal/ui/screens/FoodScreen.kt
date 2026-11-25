@@ -189,7 +189,7 @@ fun FoodScreen(
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Surface(color = Color.White.copy(alpha = 0.25f), shape = RoundedCornerShape(8.dp)) {
                                     Text(
-                                        "DINING",
+                                        if (spot.isOpenNow) "DINING • OPEN NOW" else "DINING • FULL",
                                         color = Color.White,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
@@ -204,7 +204,7 @@ fun FoodScreen(
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Icon(Icons.Default.LocationOn, contentDescription = null, tint = MotoOrangeStart, modifier = Modifier.size(16.dp))
-                            Text(spot.locationCluster, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            Text("${spot.locationCluster} • ${spot.liveStatusNote}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                         }
                         Text("Dishes: ${spot.dishes}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                         Text("Ambience: ${spot.ambience} • ${spot.rating}★", style = MaterialTheme.typography.bodySmall, color = Color.Gray)

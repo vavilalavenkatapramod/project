@@ -1,10 +1,12 @@
 package com.motomove.himachal.ui
 
 import android.app.Application
+import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import com.motomove.himachal.ai.FoodMatchResult
 import com.motomove.himachal.ai.MotoAiEngine
 import com.motomove.himachal.ai.MotoAiPickupPlan
@@ -13,6 +15,7 @@ import com.motomove.himachal.data.HimachalCatalog
 import com.motomove.himachal.data.MotoMoveDatabaseHelper
 import com.motomove.himachal.data.MotoMoveRepository
 import com.motomove.himachal.data.OpResult
+import com.motomove.himachal.live.LiveSyncClient
 import com.motomove.himachal.model.AppNotification
 import com.motomove.himachal.model.AuditLog
 import com.motomove.himachal.model.Booking
@@ -34,6 +37,8 @@ import com.motomove.himachal.model.UserRole
 import com.motomove.himachal.model.VehicleListing
 import com.motomove.himachal.model.VerificationDocument
 import com.motomove.himachal.model.VerificationStatus
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import java.time.LocalDate
 
 data class ChatBubble(val isUser: Boolean, val text: String)
@@ -54,8 +59,11 @@ data class MotoMoveUiState(
     val notifications: List<AppNotification> = emptyList(),
     val auditLogs: List<AuditLog> = emptyList(),
     val pilotMetrics: PilotMetrics? = null,
+    // Live Multi-Device Sync state
+    val liveServerUrl: String = "http://10.0.2.2:8080",
+    val isLiveConnected: Boolean = false,
     // Explore Refine Search state
-    val selectedCategory: Int = 0, // 0=Vehicles, 1=Drivers, 2=Stays
+    val selectedCategory: Int = 0,
     val selectedHubCode: String = "ALL",
     val selectedClusterName: String = "ALL",
     val searchStartDay: Long = LocalDate.now().plusDays(1).toEpochDay(),
@@ -81,14 +89,65 @@ data class MotoMoveUiState(
 
 class MotoMoveViewModel(application: Application) : AndroidViewModel(application) {
 
+    private val prefs = application.getSharedPreferences("motomove_prefs", Context.MODE_PRIVATE)
     private val dbHelper = MotoMoveDatabaseHelper(application)
     private val repo = MotoMoveRepository(dbHelper)
+    private val liveClient = LiveSyncClient()
+    private var sseJob: Job? = null
 
     var uiState by mutableStateOf(MotoMoveUiState())
         private set
 
     init {
+        val savedUrl = prefs.getString("live_server_url", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080"
+        uiState = uiState.copy(liveServerUrl = savedUrl)
         refreshAll()
+        startLiveStream(savedUrl)
+    }
+
+    fun setLiveServerUrl(url: String) {
+        val clean = url.trim().trimEnd('/')
+        prefs.edit().putString("live_server_url", clean).apply()
+        uiState = uiState.copy(liveServerUrl = clean, isLiveConnected = false)
+        startLiveStream(clean)
+        showMessage("Connecting to Live Server: $clean")
+    }
+
+    private fun startLiveStream(url: String) {
+        sseJob?.cancel()
+        if (url.isBlank()) return
+        sseJob = viewModelScope.launch {
+            pullLiveSnapshot()
+            liveClient.observeEvents(url).collect { event ->
+                if (event == null) {
+                    uiState = uiState.copy(isLiveConnected = false)
+                } else {
+                    uiState = uiState.copy(isLiveConnected = true)
+                    pullLiveSnapshot()
+                    if (event.type != "CONNECTED" && event.summary.isNotBlank()) {
+                        val mine = event.targetUserId == null || event.targetUserId == uiState.currentUser?.userId
+                        if (mine) {
+                            showMessage("LIVE: ${event.summary}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun pullLiveSnapshot() {
+        val snap = liveClient.fetchSnapshot(uiState.liveServerUrl, uiState.currentUser?.userId) ?: return
+        val roomsMap = snap.roomTypes.groupBy { it.propertyId }
+        uiState = uiState.copy(
+            isLiveConnected = true,
+            vehicles = snap.vehicles,
+            drivers = snap.drivers,
+            properties = snap.properties,
+            roomsByProperty = roomsMap,
+            diningSpots = snap.diningSpots,
+            bookings = if (uiState.currentUser != null) snap.bookings else uiState.bookings,
+            notifications = if (uiState.currentUser != null) snap.notifications else uiState.notifications
+        )
     }
 
     fun refreshAll() {
@@ -115,6 +174,8 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             auditLogs = user?.let { repo.getAuditLogsForActor(it) } ?: emptyList(),
             pilotMetrics = user?.let { repo.getPilotMetrics(it) }
         )
+
+        viewModelScope.launch { pullLiveSnapshot() }
     }
 
     fun clearBanner() {
@@ -194,17 +255,98 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         uiState = uiState.copy(foodClusterFilter = cluster, foodSpecialtyFilter = specialty)
     }
 
-    fun toggleReelLike(reelId: String) {
+    // --- Live Real-Time Broadcast Controls for Providers ---
+
+    fun toggleVehicleLive(vehicle: VehicleListing, availableNow: Boolean, rateInr: Int, note: String) {
         val user = uiState.currentUser ?: return
-        repo.toggleReelLike(user, reelId)
-        uiState = uiState.copy(travelReels = repo.getReelsForUser(user.userId))
+        if (uiState.isLiveConnected) {
+            viewModelScope.launch {
+                val r = liveClient.patchVehicleLive(uiState.liveServerUrl, user.userId, vehicle.vehicleId, availableNow, rateInr, note)
+                r.onSuccess {
+                    pullLiveSnapshot()
+                    showMessage("Broadcasted LIVE update for ${vehicle.title}")
+                }.onFailure {
+                    showMessage(it.message ?: "Live update denied", isError = true)
+                }
+            }
+        } else {
+            when (val res = repo.toggleVehicleLive(user, vehicle.vehicleId, availableNow, rateInr, note)) {
+                is OpResult.Success -> {
+                    refreshAll()
+                    showMessage("Updated ${vehicle.title} locally (connect Live Server to sync across phones).")
+                }
+                is OpResult.Error -> showMessage(res.message, isError = true)
+            }
+        }
     }
 
-    fun toggleReelSave(reelId: String) {
+    fun toggleDriverLive(driver: DriverProfile, availableNow: Boolean, ratePerDay: Int, summary: String) {
         val user = uiState.currentUser ?: return
-        repo.toggleReelSave(user, reelId)
-        uiState = uiState.copy(travelReels = repo.getReelsForUser(user.userId))
-        showMessage("Updated your Saved Himachal Reels.")
+        if (uiState.isLiveConnected) {
+            viewModelScope.launch {
+                val r = liveClient.patchDriverLive(uiState.liveServerUrl, user.userId, driver.driverId, availableNow, ratePerDay, summary)
+                r.onSuccess {
+                    pullLiveSnapshot()
+                    showMessage("Broadcasted LIVE driver status!")
+                }.onFailure {
+                    showMessage(it.message ?: "Live update denied", isError = true)
+                }
+            }
+        } else {
+            when (val res = repo.toggleDriverLive(user, driver.driverId, availableNow, ratePerDay, summary)) {
+                is OpResult.Success -> {
+                    refreshAll()
+                    showMessage("Driver status updated locally.")
+                }
+                is OpResult.Error -> showMessage(res.message, isError = true)
+            }
+        }
+    }
+
+    fun updateRoomLiveInventory(room: RoomType, newInventory: Int, newRate: Int) {
+        val user = uiState.currentUser ?: return
+        if (uiState.isLiveConnected) {
+            viewModelScope.launch {
+                val r = liveClient.patchRoomLive(uiState.liveServerUrl, user.userId, room.roomTypeId, newInventory.coerceAtLeast(0), newRate)
+                r.onSuccess {
+                    pullLiveSnapshot()
+                    showMessage("Broadcasted LIVE room count (${newInventory.coerceAtLeast(0)})!")
+                }.onFailure {
+                    showMessage(it.message ?: "Room update denied", isError = true)
+                }
+            }
+        } else {
+            when (val res = repo.updateRoomLiveInventory(user, room.roomTypeId, newInventory, newRate)) {
+                is OpResult.Success -> {
+                    refreshAll()
+                    showMessage("Room inventory updated locally.")
+                }
+                is OpResult.Error -> showMessage(res.message, isError = true)
+            }
+        }
+    }
+
+    fun toggleDiningLive(spot: DiningSpot, isOpenNow: Boolean, note: String, avgCost: Int) {
+        val user = uiState.currentUser ?: return
+        if (uiState.isLiveConnected) {
+            viewModelScope.launch {
+                val r = liveClient.patchDiningLive(uiState.liveServerUrl, user.userId, spot.spotId, isOpenNow, note, avgCost)
+                r.onSuccess {
+                    pullLiveSnapshot()
+                    showMessage("Broadcasted LIVE dining status for ${spot.name}!")
+                }.onFailure {
+                    showMessage(it.message ?: "Dining update denied", isError = true)
+                }
+            }
+        } else {
+            when (val res = repo.toggleDiningLive(user, spot.spotId, isOpenNow, note, avgCost)) {
+                is OpResult.Success -> {
+                    refreshAll()
+                    showMessage("Dining availability updated locally.")
+                }
+                is OpResult.Error -> showMessage(res.message, isError = true)
+            }
+        }
     }
 
     fun submitVehicleBooking(
@@ -241,7 +383,14 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             cancellationTerms = vehicle.cancellationTerms
         )) {
             is OpResult.Success -> {
-                refreshAll()
+                if (uiState.isLiveConnected) {
+                    viewModelScope.launch {
+                        liveClient.postBooking(uiState.liveServerUrl, user.userId, res.data)
+                        pullLiveSnapshot()
+                    }
+                } else {
+                    refreshAll()
+                }
                 showMessage("Pickup/Ride request sent! ID: ${res.data.bookingId} (₹${res.data.quotedPriceInr})")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -281,7 +430,14 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             cancellationTerms = driver.cancellationTerms
         )) {
             is OpResult.Success -> {
-                refreshAll()
+                if (uiState.isLiveConnected) {
+                    viewModelScope.launch {
+                        liveClient.postBooking(uiState.liveServerUrl, user.userId, res.data)
+                        pullLiveSnapshot()
+                    }
+                } else {
+                    refreshAll()
+                }
                 showMessage("Driver request sent to ${driver.name}!")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -299,7 +455,14 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         val user = uiState.currentUser ?: return
         when (val res = repo.createStayBooking(user, property, roomType, checkInDay, checkOutDay, guests, notes)) {
             is OpResult.Success -> {
-                refreshAll()
+                if (uiState.isLiveConnected) {
+                    viewModelScope.launch {
+                        liveClient.postBooking(uiState.liveServerUrl, user.userId, res.data)
+                        pullLiveSnapshot()
+                    }
+                } else {
+                    refreshAll()
+                }
                 showMessage("Stay request sent to ${property.name} (₹${res.data.quotedPriceInr})!")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -310,7 +473,14 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         val user = uiState.currentUser ?: return
         when (val res = repo.createDiningReservation(user, spot, guests, notes)) {
             is OpResult.Success -> {
-                refreshAll()
+                if (uiState.isLiveConnected) {
+                    viewModelScope.launch {
+                        liveClient.postBooking(uiState.liveServerUrl, user.userId, res.data)
+                        pullLiveSnapshot()
+                    }
+                } else {
+                    refreshAll()
+                }
                 showMessage("Table reserved at ${spot.name} for $guests guests!")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -319,6 +489,17 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
 
     fun respondToBooking(bookingId: String, accept: Boolean) {
         val user = uiState.currentUser ?: return
+        if (uiState.isLiveConnected) {
+            viewModelScope.launch {
+                liveClient.postRespondBooking(uiState.liveServerUrl, user.userId, bookingId, accept)
+                    .onSuccess {
+                        pullLiveSnapshot()
+                        showMessage("Live response broadcasted!")
+                    }
+                    .onFailure { showMessage(it.message ?: "Failed", isError = true) }
+            }
+            return
+        }
         when (val res = repo.respondToBooking(user, bookingId, accept)) {
             is OpResult.Success -> {
                 refreshAll()

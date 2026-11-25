@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsBike
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
@@ -26,8 +28,10 @@ import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Restaurant
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,14 +40,21 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -84,9 +95,8 @@ fun MotoMoveApp(vm: MotoMoveViewModel = viewModel()) {
     val currentUser = state.currentUser
     val isTourist = currentUser?.role == UserRole.TOURIST
     val unreadAlerts = state.notifications.count { !it.isRead }
+    var showLiveDialog by remember { mutableStateOf(false) }
 
-    // 5 swipeable pages matching the bottom bar:
-    // 0: Explore, 1: Food, 2: MotoAI, 3: Bookings (or Manage/Admin), 4: Alerts
     val pagerState = rememberPagerState(initialPage = 0, pageCount = { 5 })
     val scope = rememberCoroutineScope()
 
@@ -125,6 +135,32 @@ fun MotoMoveApp(vm: MotoMoveViewModel = viewModel()) {
                     }
                 },
                 actions = {
+                    Surface(
+                        color = if (state.isLiveConnected) Color(0xFFDCFCE7) else Color(0xFFFEF3C7),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .clickable { showLiveDialog = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(if (state.isLiveConnected) Color(0xFF16A34A) else Color(0xFFD97706))
+                            )
+                            Text(
+                                if (state.isLiveConnected) "LIVE" else "LOCAL",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (state.isLiveConnected) Color(0xFF166534) else Color(0xFF92400E)
+                            )
+                        }
+                    }
                     if (currentUser != null) {
                         IconButton(onClick = { vm.logout() }) {
                             Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "Sign Out", tint = MotoGreen)
@@ -235,7 +271,6 @@ fun MotoMoveApp(vm: MotoMoveViewModel = viewModel()) {
                     onQuickDemo = vm::quickSignInDemo
                 )
             } else {
-                // Horizontal Swipe Pager across Explore <-> Food <-> MotoAI <-> Bookings/Manage <-> Alerts
                 HorizontalPager(
                     state = pagerState,
                     beyondViewportPageCount = 1,
@@ -289,6 +324,10 @@ fun MotoMoveApp(vm: MotoMoveViewModel = viewModel()) {
                                 onAddVehicle = vm::addVehicleListing,
                                 onUpdateOwnVehicle = vm::updateOwnVehicle,
                                 onDeleteOwnVehicle = vm::deleteOwnVehicle,
+                                onToggleVehicleLive = vm::toggleVehicleLive,
+                                onToggleDriverLive = vm::toggleDriverLive,
+                                onUpdateRoomLiveInventory = vm::updateRoomLiveInventory,
+                                onToggleDiningLive = vm::toggleDiningLive,
                                 onSubmitDriverDoc = vm::submitDriverDoc,
                                 onAddProperty = vm::addPropertyWithRoom,
                                 onUpdateOwnProperty = vm::updateOwnProperty
@@ -303,5 +342,40 @@ fun MotoMoveApp(vm: MotoMoveViewModel = viewModel()) {
                 }
             }
         }
+    }
+
+    if (showLiveDialog) {
+        var urlDraft by remember(state.liveServerUrl) { mutableStateOf(state.liveServerUrl) }
+        AlertDialog(
+            onDismissRequest = { showLiveDialog = false },
+            title = { Text("Live Multi-Device Sync (SSE)") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (state.isLiveConnected) "Status: CONNECTED LIVE — Updates from Drivers, Hotels & Food appear instantly across phones!"
+                        else "Status: Offline/Local Mode. Run 'node server.js' in MotoMoveServer and enter its address below:",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        value = urlDraft,
+                        onValueChange = { urlDraft = it },
+                        label = { Text("Live Server URL") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(onClick = { urlDraft = "http://10.0.2.2:8080" }) { Text("Emulator") }
+                        OutlinedButton(onClick = { urlDraft = "http://192.168.1.100:8080" }) { Text("Wi-Fi IP") }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    vm.setLiveServerUrl(urlDraft)
+                    showLiveDialog = false
+                }) { Text("Connect Live") }
+            },
+            dismissButton = { TextButton(onClick = { showLiveDialog = false }) { Text("Close") } }
+        )
     }
 }

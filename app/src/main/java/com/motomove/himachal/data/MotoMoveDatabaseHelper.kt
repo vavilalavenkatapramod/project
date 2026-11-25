@@ -70,6 +70,8 @@ class MotoMoveDatabaseHelper(context: Context) :
                 rate_basis TEXT NOT NULL,
                 cancellation_terms TEXT NOT NULL,
                 approval_status TEXT NOT NULL,
+                is_available_now INTEGER NOT NULL DEFAULT 1,
+                live_status_note TEXT NOT NULL DEFAULT 'Ready for pickup',
                 last_updated_at INTEGER NOT NULL,
                 FOREIGN KEY(provider_id) REFERENCES provider_profiles(provider_id)
             )
@@ -89,6 +91,7 @@ class MotoMoveDatabaseHelper(context: Context) :
                 availability_summary TEXT NOT NULL,
                 cancellation_terms TEXT NOT NULL,
                 approval_status TEXT NOT NULL,
+                is_available_now INTEGER NOT NULL DEFAULT 1,
                 last_updated_at INTEGER NOT NULL,
                 FOREIGN KEY(provider_id) REFERENCES provider_profiles(provider_id)
             )
@@ -153,7 +156,9 @@ class MotoMoveDatabaseHelper(context: Context) :
                 ambience TEXT NOT NULL,
                 avg_cost_inr INTEGER NOT NULL,
                 is_fssai_verified INTEGER NOT NULL DEFAULT 1,
-                rating REAL NOT NULL DEFAULT 4.8
+                rating REAL NOT NULL DEFAULT 4.8,
+                is_open_now INTEGER NOT NULL DEFAULT 1,
+                live_status_note TEXT NOT NULL DEFAULT 'Tables open now'
             )
             """.trimIndent()
         )
@@ -606,7 +611,7 @@ class MotoMoveDatabaseHelper(context: Context) :
 
     companion object {
         private const val DB_NAME = "motomove_himachal.db"
-        private const val DB_VERSION = 3
+        private const val DB_VERSION = 4
 
         private const val PBKDF2_ITERATIONS = 10_000
         private const val KEY_LENGTH_BITS = 256

@@ -755,6 +755,116 @@ class MotoMoveRepository(private val dbHelper: MotoMoveDatabaseHelper) {
         return OpResult.Success(Unit)
     }
 
+    fun toggleVehicleLive(
+        actor: User,
+        vehicleId: String,
+        isAvailableNow: Boolean,
+        rateInr: Int,
+        liveNote: String
+    ): OpResult<Unit> {
+        val vehicle = getVehicles(includeUnapproved = true).firstOrNull { it.vehicleId == vehicleId }
+            ?: return OpResult.Error("Vehicle not found.")
+        val actorProvId = getProviderForUser(actor.userId)?.providerId
+        when (val guard = BookingRulesEngine.verifyResourceOwnership(actor, actorProvId, vehicle.providerId, "vehicle")) {
+            is RuleResult.Denied -> return OpResult.Error(guard.reason)
+            RuleResult.Allowed -> Unit
+        }
+        dbHelper.writableDatabase.update(
+            "vehicles",
+            ContentValues().apply {
+                put("is_available_now", if (isAvailableNow) 1 else 0)
+                put("rate_inr", rateInr.coerceAtLeast(500))
+                put("live_status_note", liveNote.ifBlank { if (isAvailableNow) "Available now" else "On trip" })
+                put("last_updated_at", System.currentTimeMillis())
+            },
+            "vehicle_id=? AND provider_id=?",
+            arrayOf(vehicleId, actorProvId)
+        )
+        return OpResult.Success(Unit)
+    }
+
+    fun toggleDriverLive(
+        actor: User,
+        driverId: String,
+        isAvailableNow: Boolean,
+        ratePerDayInr: Int,
+        summary: String
+    ): OpResult<Unit> {
+        val driver = getDrivers(includeUnapproved = true).firstOrNull { it.driverId == driverId }
+            ?: return OpResult.Error("Driver not found.")
+        val actorProvId = getProviderForUser(actor.userId)?.providerId
+        when (val guard = BookingRulesEngine.verifyResourceOwnership(actor, actorProvId, driver.providerId, "driver profile")) {
+            is RuleResult.Denied -> return OpResult.Error(guard.reason)
+            RuleResult.Allowed -> Unit
+        }
+        dbHelper.writableDatabase.update(
+            "drivers",
+            ContentValues().apply {
+                put("is_available_now", if (isAvailableNow) 1 else 0)
+                put("rate_per_day_inr", ratePerDayInr.coerceAtLeast(500))
+                put("availability_summary", summary.ifBlank { if (isAvailableNow) "Online & ready" else "Currently on trip" })
+                put("last_updated_at", System.currentTimeMillis())
+            },
+            "driver_id=? AND provider_id=?",
+            arrayOf(driverId, actorProvId)
+        )
+        return OpResult.Success(Unit)
+    }
+
+    fun updateRoomLiveInventory(
+        actor: User,
+        roomTypeId: String,
+        newInventoryCount: Int,
+        newRateInr: Int
+    ): OpResult<Unit> {
+        val room = getAllRooms().firstOrNull { it.roomTypeId == roomTypeId }
+            ?: return OpResult.Error("Room not found.")
+        val prop = getProperties(includeUnapproved = true).firstOrNull { it.propertyId == room.propertyId }
+            ?: return OpResult.Error("Property not found.")
+        val actorProvId = getProviderForUser(actor.userId)?.providerId
+        when (val guard = BookingRulesEngine.verifyResourceOwnership(actor, actorProvId, prop.providerId, "room inventory")) {
+            is RuleResult.Denied -> return OpResult.Error(guard.reason)
+            RuleResult.Allowed -> Unit
+        }
+        dbHelper.writableDatabase.update(
+            "room_types",
+            ContentValues().apply {
+                put("inventory_count", newInventoryCount.coerceAtLeast(0))
+                put("rate_per_night_inr", newRateInr.coerceAtLeast(500))
+            },
+            "room_type_id=?",
+            arrayOf(roomTypeId)
+        )
+        return OpResult.Success(Unit)
+    }
+
+    fun toggleDiningLive(
+        actor: User,
+        spotId: String,
+        isOpenNow: Boolean,
+        liveNote: String,
+        avgCostInr: Int
+    ): OpResult<Unit> {
+        val spot = getDiningSpots().firstOrNull { it.spotId == spotId }
+            ?: return OpResult.Error("Dining spot not found.")
+        val actorProvId = getProviderForUser(actor.userId)?.providerId
+        when (val guard = BookingRulesEngine.verifyResourceOwnership(actor, actorProvId, spot.providerId, "dining spot")) {
+            is RuleResult.Denied -> return OpResult.Error(guard.reason)
+            RuleResult.Allowed -> Unit
+        }
+        dbHelper.writableDatabase.update(
+            "dining_spots",
+            ContentValues().apply {
+                put("is_open_now", if (isOpenNow) 1 else 0)
+                put("live_status_note", liveNote.ifBlank { if (isOpenNow) "Tables open now" else "Currently full" })
+                put("avg_cost_inr", avgCostInr.coerceAtLeast(100))
+            },
+            "spot_id=? AND provider_id=?",
+            arrayOf(spotId, actorProvId)
+        )
+        return OpResult.Success(Unit)
+    }
+
     fun submitDriverProfileAndDocument(
         actor: User,
         languages: String,
@@ -1089,7 +1199,9 @@ class MotoMoveRepository(private val dbHelper: MotoMoveDatabaseHelper) {
         cancellationTerms = getString(getColumnIndexOrThrow("cancellation_terms")),
         approvalStatus = ListingApprovalStatus.valueOf(getString(getColumnIndexOrThrow("approval_status"))),
         providerVerification = VerificationStatus.valueOf(getString(getColumnIndexOrThrow("verification_status"))),
-        lastUpdatedAt = getLong(getColumnIndexOrThrow("last_updated_at"))
+        lastUpdatedAt = getLong(getColumnIndexOrThrow("last_updated_at")),
+        isAvailableNow = getInt(getColumnIndexOrThrow("is_available_now")) == 1,
+        liveStatusNote = getString(getColumnIndexOrThrow("live_status_note"))
     )
 
     private fun Cursor.toDriver() = DriverProfile(
@@ -1105,7 +1217,8 @@ class MotoMoveRepository(private val dbHelper: MotoMoveDatabaseHelper) {
         cancellationTerms = getString(getColumnIndexOrThrow("cancellation_terms")),
         verificationStatus = VerificationStatus.valueOf(getString(getColumnIndexOrThrow("verification_status"))),
         approvalStatus = ListingApprovalStatus.valueOf(getString(getColumnIndexOrThrow("approval_status"))),
-        lastUpdatedAt = getLong(getColumnIndexOrThrow("last_updated_at"))
+        lastUpdatedAt = getLong(getColumnIndexOrThrow("last_updated_at")),
+        isAvailableNow = getInt(getColumnIndexOrThrow("is_available_now")) == 1
     )
 
     private fun Cursor.toProperty() = PropertyListing(
@@ -1134,7 +1247,9 @@ class MotoMoveRepository(private val dbHelper: MotoMoveDatabaseHelper) {
         ambience = getString(getColumnIndexOrThrow("ambience")),
         avgCostInr = getInt(getColumnIndexOrThrow("avg_cost_inr")),
         isFssaiVerified = getInt(getColumnIndexOrThrow("is_fssai_verified")) == 1,
-        rating = getDouble(getColumnIndexOrThrow("rating"))
+        rating = getDouble(getColumnIndexOrThrow("rating")),
+        isOpenNow = getInt(getColumnIndexOrThrow("is_open_now")) == 1,
+        liveStatusNote = getString(getColumnIndexOrThrow("live_status_note"))
     )
 
     private fun Cursor.toRoomType() = RoomType(

@@ -526,13 +526,14 @@ fun TouristExploreScreen(
         // 9. Listing Cards
         when (state.selectedCategory) {
             0 -> items(filteredVehicles, key = { it.vehicleId }) { v ->
+                val liveTag = if (v.isAvailableNow) "● LIVE NOW: ${v.liveStatusNote}" else "● ON TRIP: ${v.liveStatusNote}"
                 BlueGradientOptionCard(
-                    badgeLabel = "VEHICLE",
+                    badgeLabel = if (v.isAvailableNow) "VEHICLE • LIVE" else "VEHICLE • BUSY",
                     priceLabel = "₹${v.rateInr} ${v.rateBasis}",
                     isVerified = v.providerVerification.label == "Verified",
                     title = v.title,
                     location = v.serviceArea,
-                    subtitle = "${v.vehicleType} • ${v.capacity} seats • ${v.rentalMode.label} • Pickups: ${v.pickupHubs.joinToString(", ")}",
+                    subtitle = "$liveTag\n${v.vehicleType} • ${v.capacity} seats • ${v.rentalMode.label} • Pickups: ${v.pickupHubs.joinToString(", ")}",
                     ownerLabel = v.ownerName,
                     icon = Icons.Default.DirectionsCar,
                     actionLabel = if (isTourist) "View & Book →" else "Tourist Only",
@@ -541,13 +542,14 @@ fun TouristExploreScreen(
                 )
             }
             1 -> items(filteredDrivers, key = { it.driverId }) { d ->
+                val liveTag = if (d.isAvailableNow) "● ONLINE NOW" else "● ON TRIP"
                 BlueGradientOptionCard(
-                    badgeLabel = "DRIVER",
+                    badgeLabel = if (d.isAvailableNow) "DRIVER • ONLINE" else "DRIVER • BUSY",
                     priceLabel = "₹${d.ratePerDayInr} per day",
                     isVerified = d.verificationStatus.label == "Verified",
                     title = "${d.name} (${d.experienceYears} yrs exp)",
                     location = d.serviceArea,
-                    subtitle = "${d.languages} • Pickups: ${d.pickupHubs.joinToString(", ")}",
+                    subtitle = "$liveTag • ${d.languages} • Pickups: ${d.pickupHubs.joinToString(", ")}",
                     ownerLabel = d.availabilitySummary,
                     icon = Icons.Default.PersonPin,
                     actionLabel = if (isTourist) "Book Driver →" else "Tourist Only",
@@ -558,18 +560,19 @@ fun TouristExploreScreen(
             else -> items(filteredProps, key = { it.propertyId }) { p ->
                 val rooms = state.roomsByProperty[p.propertyId].orEmpty()
                 val minRate = rooms.minOfOrNull { it.ratePerNightInr } ?: 2000
+                val totalRoomsLeft = rooms.sumOf { it.inventoryCount }
                 BlueGradientOptionCard(
-                    badgeLabel = p.propertyType.uppercase(),
+                    badgeLabel = "${p.propertyType.uppercase()} • $totalRoomsLeft LEFT",
                     priceLabel = "from ₹$minRate / night",
                     isVerified = p.providerVerification.label == "Verified",
                     title = p.name,
                     location = "${p.locationCluster} (Hub: ${p.nearestHubCode})",
-                    subtitle = "HP Reg: ${p.registrationNumber} • ${rooms.size} room type(s) • ${p.amenities}",
+                    subtitle = "● $totalRoomsLeft room(s) available live • HP Reg: ${p.registrationNumber} • ${p.amenities}",
                     ownerLabel = p.hostName,
                     icon = Icons.Default.Hotel,
-                    actionLabel = if (isTourist && rooms.isNotEmpty()) "Book Stay →" else "View",
-                    actionEnabled = isTourist && rooms.isNotEmpty(),
-                    onClick = { rooms.firstOrNull()?.let { bookingStayTarget = p to it } }
+                    actionLabel = if (isTourist && totalRoomsLeft > 0) "Book Stay →" else "Full / View",
+                    actionEnabled = isTourist && totalRoomsLeft > 0,
+                    onClick = { rooms.firstOrNull { it.inventoryCount > 0 }?.let { bookingStayTarget = p to it } }
                 )
             }
         }

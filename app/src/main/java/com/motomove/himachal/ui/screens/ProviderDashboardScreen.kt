@@ -23,6 +23,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -31,19 +32,24 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.motomove.himachal.data.HimachalCatalog
 import com.motomove.himachal.model.BookingStatus
+import com.motomove.himachal.model.DiningSpot
+import com.motomove.himachal.model.DriverProfile
 import com.motomove.himachal.model.PropertyListing
 import com.motomove.himachal.model.RentalMode
+import com.motomove.himachal.model.RoomType
 import com.motomove.himachal.model.UserRole
 import com.motomove.himachal.model.VehicleListing
 import com.motomove.himachal.ui.MotoMoveUiState
 import com.motomove.himachal.ui.theme.MotoGreen
 import com.motomove.himachal.ui.theme.MotoGreenContainer
+import com.motomove.himachal.ui.theme.MotoOrangeStart
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -55,6 +61,10 @@ fun ProviderDashboardScreen(
     onAddVehicle: (String, String, Int, String, String, List<String>, RentalMode, Int, String) -> Unit,
     onUpdateOwnVehicle: (String, String, Int, String) -> Unit,
     onDeleteOwnVehicle: (String) -> Unit,
+    onToggleVehicleLive: (VehicleListing, Boolean, Int, String) -> Unit,
+    onToggleDriverLive: (DriverProfile, Boolean, Int, String) -> Unit,
+    onUpdateRoomLiveInventory: (RoomType, Int, Int) -> Unit,
+    onToggleDiningLive: (DiningSpot, Boolean, String, Int) -> Unit,
     onSubmitDriverDoc: (String, Int, String, List<String>, Int, String, String, String) -> Unit,
     onAddProperty: (String, String, String, String, String, String, String, Int, Int, Int) -> Unit,
     onUpdateOwnProperty: (String, String, String) -> Unit
@@ -63,9 +73,10 @@ fun ProviderDashboardScreen(
     val provider = state.currentProvider
     val myProviderId = provider?.providerId
 
-    // Strict ownership view: only show this provider's own belongings & incoming requests
     val myVehicles = state.vehicles.filter { it.providerId == myProviderId }
+    val myDrivers = state.drivers.filter { it.providerId == myProviderId }
     val myProperties = state.properties.filter { it.providerId == myProviderId }
+    val myDining = state.diningSpots.filter { it.providerId == myProviderId }
     val myBookings = state.bookings.filter { it.providerId == myProviderId }
 
     var editingVehicle by remember { mutableStateOf<VehicleListing?>(null) }
@@ -86,19 +97,17 @@ fun ProviderDashboardScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("${user.role.displayName} Workspace", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MotoGreen)
-                Text("Verification: ${provider?.verificationStatus?.label ?: "Pending"} • Cluster: ${provider?.homeCluster ?: "Himachal"}")
-                Text("Security: You can only view, edit, or delete your own belongings.", style = MaterialTheme.typography.bodySmall)
+                Text("${user.role.displayName} Live Control", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MotoGreen)
+                Text("Verification: ${provider?.verificationStatus?.label ?: "Pending"} • Sync: ${if (state.isLiveConnected) "LIVE BROADCAST ON" else "Local Mode"}")
+                Text("Ownership Lock: You can only update your own vehicles, drivers, rooms, or food spots.", style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = nameDraft, onValueChange = { nameDraft = it }, label = { Text("Your Display Name") }, modifier = Modifier.weight(1f), singleLine = true)
-                    Button(onClick = { onUpdateOwnName(nameDraft) }, colors = ButtonDefaults.buttonColors(containerColor = MotoGreen)) {
-                        Text("Save")
-                    }
+                    Button(onClick = { onUpdateOwnName(nameDraft) }, colors = ButtonDefaults.buttonColors(containerColor = MotoGreen)) { Text("Save") }
                 }
             }
         }
 
-        Text("Your Incoming Booking Requests (${myBookings.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text("Incoming Booking Requests (${myBookings.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         if (myBookings.isEmpty()) {
             Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
                 Text("No booking requests yet for your listings.", modifier = Modifier.padding(14.dp))
@@ -123,39 +132,96 @@ fun ProviderDashboardScreen(
             }
         }
 
-        // Owned Belongings Section (Edit/Delete ONLY own assets)
+        // LIVE BROADCAST CONTROLS BY ROLE
         if (user.role == UserRole.VEHICLE_OWNER) {
-            Text("Your Vehicles (${myVehicles.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text("Your Vehicles — Live Availability (${myVehicles.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             myVehicles.forEach { v ->
+                var noteDraft by remember(v.vehicleId, v.liveStatusNote) { mutableStateOf(v.liveStatusNote) }
                 Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("${v.title} (${v.approvalStatus.label})", fontWeight = FontWeight.Bold)
-                        Text("₹${v.rateInr}/day • Hubs: ${v.pickupHubs.joinToString(", ")}", style = MaterialTheme.typography.bodySmall)
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(v.title, fontWeight = FontWeight.Bold)
+                                Text(if (v.isAvailableNow) "● LIVE AVAILABLE • ₹${v.rateInr}/day" else "● ON TRIP / BUSY • ₹${v.rateInr}/day", style = MaterialTheme.typography.bodySmall, color = if (v.isAvailableNow) MotoGreen else Color(0xFFD97706), fontWeight = FontWeight.SemiBold)
+                            }
+                            Switch(checked = v.isAvailableNow, onCheckedChange = { checked -> onToggleVehicleLive(v, checked, v.rateInr, noteDraft) })
+                        }
+                        OutlinedTextField(value = noteDraft, onValueChange = { noteDraft = it }, label = { Text("Live Status Note (e.g., Parked at Bhuntar Gate 1)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { onToggleVehicleLive(v, v.isAvailableNow, v.rateInr, noteDraft) }, colors = ButtonDefaults.buttonColors(containerColor = MotoGreen)) { Text("Broadcast Live") }
                             OutlinedButton(onClick = { editingVehicle = v }) { Text("Edit") }
                             OutlinedButton(onClick = { onDeleteOwnVehicle(v.vehicleId) }) { Text("Delete", color = Color(0xFFDC2626)) }
                         }
                     }
                 }
             }
-        } else if (user.role == UserRole.ACCOMMODATION_PROVIDER) {
-            Text("Your Properties (${myProperties.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            myProperties.forEach { p ->
+        } else if (user.role == UserRole.LOCAL_DRIVER) {
+            Text("Your Live Driver Status", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            myDrivers.forEach { d ->
+                var summaryDraft by remember(d.driverId, d.availabilitySummary) { mutableStateOf(d.availabilitySummary) }
                 Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("${p.name} (${p.approvalStatus.label})", fontWeight = FontWeight.Bold)
-                        Text("Reg: ${p.registrationNumber} • ${p.locationCluster}", style = MaterialTheme.typography.bodySmall)
-                        OutlinedButton(onClick = { editingProperty = p }) { Text("Edit Property") }
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(d.name, fontWeight = FontWeight.Bold)
+                                Text(if (d.isAvailableNow) "● ONLINE FOR PICKUPS" else "● ON TRIP / OFFLINE", color = if (d.isAvailableNow) MotoGreen else Color(0xFFD97706), fontWeight = FontWeight.SemiBold)
+                            }
+                            Switch(checked = d.isAvailableNow, onCheckedChange = { checked -> onToggleDriverLive(d, checked, d.ratePerDayInr, summaryDraft) })
+                        }
+                        OutlinedTextField(value = summaryDraft, onValueChange = { summaryDraft = it }, label = { Text("Live Location / Hub Note") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                        Button(onClick = { onToggleDriverLive(d, d.isAvailableNow, d.ratePerDayInr, summaryDraft) }, colors = ButtonDefaults.buttonColors(containerColor = MotoGreen)) {
+                            Text("Broadcast Live Driver Status")
+                        }
                     }
                 }
             }
-        } else if (user.role == UserRole.LOCAL_DRIVER) {
-            Text("Your Submitted Verification Documents (${state.verificationDocs.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            state.verificationDocs.forEach { doc ->
+        } else if (user.role == UserRole.ACCOMMODATION_PROVIDER) {
+            Text("Your Stays — Live Room Inventory (${myProperties.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            myProperties.forEach { p ->
+                val rooms = state.roomsByProperty[p.propertyId].orEmpty()
                 Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text("${doc.documentType} • ${doc.reviewStatus.label}", fontWeight = FontWeight.Bold)
-                        Text("Expiry: ${doc.expiryDate} • ${doc.reviewerNotes}", style = MaterialTheme.typography.bodySmall)
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(p.name, fontWeight = FontWeight.Bold)
+                                Text("Reg: ${p.registrationNumber} • ${p.locationCluster}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            OutlinedButton(onClick = { editingProperty = p }) { Text("Edit") }
+                        }
+                        rooms.forEach { r ->
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(r.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                    Text("${r.inventoryCount} room(s) live • ₹${r.ratePerNightInr}/night", style = MaterialTheme.typography.bodySmall, color = MotoGreen)
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    OutlinedButton(onClick = { onUpdateRoomLiveInventory(r, r.inventoryCount - 1, r.ratePerNightInr) }) { Text("-1") }
+                                    Button(onClick = { onUpdateRoomLiveInventory(r, r.inventoryCount + 1, r.ratePerNightInr) }, colors = ButtonDefaults.buttonColors(containerColor = MotoGreen)) { Text("+1") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (myDining.isNotEmpty()) {
+                Text("Your Mountain Dining Spots — Live Status (${myDining.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                myDining.forEach { spot ->
+                    var noteDraft by remember(spot.spotId, spot.liveStatusNote) { mutableStateOf(spot.liveStatusNote) }
+                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(spot.name, fontWeight = FontWeight.Bold)
+                                    Text(if (spot.isOpenNow) "● TABLES OPEN NOW" else "● CURRENTLY FULL", color = if (spot.isOpenNow) MotoGreen else MotoOrangeStart, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
+                                }
+                                Switch(checked = spot.isOpenNow, onCheckedChange = { checked -> onToggleDiningLive(spot, checked, noteDraft, spot.avgCostInr) })
+                            }
+                            OutlinedTextField(value = noteDraft, onValueChange = { noteDraft = it }, label = { Text("Live Dish / Table Note") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            Button(onClick = { onToggleDiningLive(spot, spot.isOpenNow, noteDraft, spot.avgCostInr) }, colors = ButtonDefaults.buttonColors(containerColor = MotoOrangeStart)) {
+                                Text("Broadcast Food Status")
+                            }
+                        }
                     }
                 }
             }
@@ -190,9 +256,7 @@ fun ProviderDashboardScreen(
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            RentalMode.entries.forEach { m ->
-                                FilterChip(selected = mode == m, onClick = { mode = m }, label = { Text(m.label) })
-                            }
+                            RentalMode.entries.forEach { m -> FilterChip(selected = mode == m, onClick = { mode = m }, label = { Text(m.label) }) }
                         }
                         OutlinedTextField(value = rate, onValueChange = { rate = it }, label = { Text("Rate INR / day") }, modifier = Modifier.fillMaxWidth())
                         Button(

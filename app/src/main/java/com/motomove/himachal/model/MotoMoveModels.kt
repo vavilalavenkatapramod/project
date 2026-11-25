@@ -118,7 +118,9 @@ data class VehicleListing(
     val cancellationTerms: String,
     val approvalStatus: ListingApprovalStatus,
     val providerVerification: VerificationStatus,
-    val lastUpdatedAt: Long
+    val lastUpdatedAt: Long,
+    val isAvailableNow: Boolean = true,
+    val liveStatusNote: String = "Available for pickup"
 )
 
 data class DriverProfile(
@@ -134,7 +136,8 @@ data class DriverProfile(
     val cancellationTerms: String,
     val verificationStatus: VerificationStatus,
     val approvalStatus: ListingApprovalStatus,
-    val lastUpdatedAt: Long
+    val lastUpdatedAt: Long,
+    val isAvailableNow: Boolean = true
 )
 
 data class VerificationDocument(
@@ -183,7 +186,9 @@ data class DiningSpot(
     val ambience: String,
     val avgCostInr: Int,
     val isFssaiVerified: Boolean,
-    val rating: Double
+    val rating: Double,
+    val isOpenNow: Boolean = true,
+    val liveStatusNote: String = "Tables open now"
 )
 
 data class TravelReel(
