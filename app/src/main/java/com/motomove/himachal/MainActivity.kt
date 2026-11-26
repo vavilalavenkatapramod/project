@@ -319,7 +319,9 @@ fun MotoMoveApp(vm: MotoMoveViewModel = viewModel()) {
                                 onVerifyDoc = vm::adminVerifyDocument,
                                 onModerateVehicle = vm::adminApproveVehicle,
                                 onModerateDriver = vm::adminApproveDriver,
-                                onModerateProperty = vm::adminApproveProperty
+                                onModerateProperty = vm::adminApproveProperty,
+                                onSetUserStatus = vm::adminSetUserAccountStatus,
+                                onModerateReview = vm::adminModerateReview
                             )
                             else -> ProviderDashboardScreen(
                                 state = state,

@@ -15,6 +15,8 @@ import com.motomove.himachal.data.HimachalCatalog
 import com.motomove.himachal.data.MotoMoveDatabaseHelper
 import com.motomove.himachal.data.MotoMoveRepository
 import com.motomove.himachal.data.OpResult
+import com.motomove.himachal.domain.BookingRulesEngine
+import com.motomove.himachal.domain.RuleResult
 import com.motomove.himachal.live.FirebaseLiveSyncManager
 import com.motomove.himachal.live.LiveSyncClient
 import com.motomove.himachal.model.AppNotification
@@ -48,6 +50,7 @@ data class MotoMoveUiState(
     val currentUser: User? = null,
     val firebaseUid: String? = null,
     val demoUsers: List<User> = emptyList(),
+    val allUsers: List<User> = emptyList(),
     val currentProvider: ProviderProfile? = null,
     val vehicles: List<VehicleListing> = emptyList(),
     val drivers: List<DriverProfile> = emptyList(),
@@ -106,6 +109,10 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
     private var cloudDining: List<DiningSpot> = emptyList()
     private var cloudBookings: List<Booking> = emptyList()
     private var cloudNotifications: List<AppNotification> = emptyList()
+    private var cloudUsers: List<User> = emptyList()
+    private var cloudVerificationDocs: List<VerificationDocument> = emptyList()
+    private var cloudReviews: List<Review> = emptyList()
+    private var cloudAuditLogs: List<AuditLog> = emptyList()
 
     var uiState by mutableStateOf(MotoMoveUiState())
         private set
@@ -131,12 +138,13 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun bindFirebaseSession(user: User, rawPassword: String) {
+        val provId = repo.getProviderForUser(user.userId)?.providerId
         firebaseSync.authenticateAndBind(
             user = user,
+            providerId = provId,
             rawPassword = rawPassword,
             onReady = { uid ->
                 uiState = uiState.copy(firebaseUid = uid, isFirebaseConnected = true)
-                val provId = repo.getProviderForUser(user.userId)?.providerId
                 if (provId != null) {
                     firebaseSync.seedProviderListingsIfOwned(
                         uid = uid,
@@ -146,12 +154,14 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
                         rooms = repo.getAllRooms().filter { r ->
                             repo.getProperties(includeUnapproved = true).any { p -> p.propertyId == r.propertyId && p.providerId == provId }
                         },
-                        diningSpots = repo.getDiningSpots().filter { it.providerId == provId }
+                        diningSpots = repo.getDiningSpots().filter { it.providerId == provId },
+                        verificationDocs = repo.getVerificationDocumentsForActor(user).filter { it.providerId == provId }
                     )
                 }
                 firebaseSync.startListeners(
                     uid = uid,
                     role = user.role,
+                    providerId = provId,
                     onVehicles = { list -> cloudVehicles = list; mergeAndEmitState() },
                     onDrivers = { list -> cloudDrivers = list; mergeAndEmitState() },
                     onProperties = { list -> cloudProperties = list; mergeAndEmitState() },
@@ -159,6 +169,16 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
                     onDining = { list -> cloudDining = list; mergeAndEmitState() },
                     onBookings = { list -> cloudBookings = list; mergeAndEmitState() },
                     onNotifications = { list -> cloudNotifications = list; mergeAndEmitState() },
+                    onUsers = if (user.role == UserRole.ADMINISTRATOR) {
+                        { list -> cloudUsers = list; mergeAndEmitState() }
+                    } else null,
+                    onVerificationDocs = if (user.role == UserRole.ADMINISTRATOR || provId != null) {
+                        { list -> cloudVerificationDocs = list; mergeAndEmitState() }
+                    } else null,
+                    onReviews = { list -> cloudReviews = list; mergeAndEmitState() },
+                    onAuditLogs = if (user.role == UserRole.ADMINISTRATOR) {
+                        { list -> cloudAuditLogs = list; mergeAndEmitState() }
+                    } else null,
                     onStatus = { connected, _ ->
                         uiState = uiState.copy(isFirebaseConnected = connected)
                     }
@@ -201,6 +221,35 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             .distinctBy { it.notificationId }
             .sortedByDescending { it.createdAt }
 
+        val localDocs = user?.let { repo.getVerificationDocumentsForActor(it) } ?: emptyList()
+        val mergedDocs = mergeByKey(localDocs, cloudVerificationDocs) { it.documentId }
+
+        val localReviews = repo.getReviewsForListing(null)
+        val mergedReviews = mergeByKey(localReviews, cloudReviews) { it.reviewId }
+            .sortedByDescending { it.createdAt }
+
+        val localUsers = user?.let { repo.getAllUsersForAdmin(it) } ?: emptyList()
+        val mergedUsers = mergeByKey(localUsers, cloudUsers) { it.userId }
+
+        val localAudits = user?.let { repo.getAuditLogsForActor(it) } ?: emptyList()
+        val mergedAudits = (cloudAuditLogs + localAudits)
+            .distinctBy { it.auditId }
+            .sortedByDescending { it.timestamp }
+
+        val liveMetrics = if (isAdmin) {
+            val timestamps = mergedVehicles.map { it.lastUpdatedAt } +
+                mergedDrivers.map { it.lastUpdatedAt } +
+                mergedProps.map { it.lastUpdatedAt }
+            BookingRulesEngine.computePilotMetrics(
+                approvedVehicles = mergedVehicles.count { it.approvalStatus == ListingApprovalStatus.APPROVED },
+                approvedDrivers = mergedDrivers.count { it.approvalStatus == ListingApprovalStatus.APPROVED },
+                approvedProperties = mergedProps.count { it.approvalStatus == ListingApprovalStatus.APPROVED },
+                listingUpdateTimestamps = timestamps,
+                bookings = mergedBookings,
+                nowMillis = System.currentTimeMillis()
+            )
+        } else null
+
         uiState = uiState.copy(
             vehicles = mergedVehicles,
             drivers = mergedDrivers,
@@ -208,7 +257,12 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             roomsByProperty = roomsMap,
             diningSpots = mergedDining,
             bookings = mergedBookings,
-            notifications = mergedNotifs
+            notifications = mergedNotifs,
+            verificationDocs = mergedDocs,
+            reviews = mergedReviews,
+            allUsers = mergedUsers,
+            auditLogs = mergedAudits,
+            pilotMetrics = liveMetrics
         )
     }
 
@@ -305,6 +359,10 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         firebaseSync.signOut()
         cloudBookings = emptyList()
         cloudNotifications = emptyList()
+        cloudUsers = emptyList()
+        cloudVerificationDocs = emptyList()
+        cloudReviews = emptyList()
+        cloudAuditLogs = emptyList()
         uiState = uiState.copy(
             currentUser = null,
             firebaseUid = null,
@@ -476,7 +534,11 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             is OpResult.Success -> {
                 refreshAll()
                 if (uiState.isFirebaseConnected) {
-                    firebaseSync.createBooking(res.data, vehicle.ownerUid) { _, _ -> }
+                    firebaseSync.createBooking(res.data, vehicle.ownerUid) { ok, err ->
+                        if (!ok && err != null) {
+                            showMessage("Saved locally; cloud sync error: $err", isError = true)
+                        }
+                    }
                 }
                 showMessage("Pickup/Ride request sent! ID: ${res.data.bookingId} (₹${res.data.quotedPriceInr})")
             }
@@ -519,7 +581,11 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             is OpResult.Success -> {
                 refreshAll()
                 if (uiState.isFirebaseConnected) {
-                    firebaseSync.createBooking(res.data, driver.ownerUid) { _, _ -> }
+                    firebaseSync.createBooking(res.data, driver.ownerUid) { ok, err ->
+                        if (!ok && err != null) {
+                            showMessage("Saved locally; cloud sync error: $err", isError = true)
+                        }
+                    }
                 }
                 showMessage("Driver request sent to ${driver.name}!")
             }
@@ -540,7 +606,12 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             is OpResult.Success -> {
                 refreshAll()
                 if (uiState.isFirebaseConnected) {
-                    firebaseSync.createBooking(res.data, property.ownerUid) { _, _ -> }
+                    val ownerUid = property.ownerUid.ifBlank { roomType.ownerUid }
+                    firebaseSync.createBooking(res.data, ownerUid) { ok, err ->
+                        if (!ok && err != null) {
+                            showMessage("Saved locally; cloud sync error: $err", isError = true)
+                        }
+                    }
                 }
                 showMessage("Stay request sent to ${property.name} (₹${res.data.quotedPriceInr})!")
             }
@@ -554,9 +625,13 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
             is OpResult.Success -> {
                 refreshAll()
                 if (uiState.isFirebaseConnected) {
-                    firebaseSync.createBooking(res.data, spot.ownerUid) { _, _ -> }
+                    firebaseSync.createBooking(res.data, spot.ownerUid) { ok, err ->
+                        if (!ok && err != null) {
+                            showMessage("Saved locally; cloud sync error: $err", isError = true)
+                        }
+                    }
                 }
-                showMessage("Table reserved at ${spot.name} for $guests guests!")
+                showMessage("Table request sent to ${spot.name} for $guests guests! Awaiting owner confirmation.")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
         }
@@ -572,13 +647,27 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
                 firebaseSync.updateBookingStatus(
                     cloudTarget,
                     if (accept) BookingStatus.ACCEPTED else BookingStatus.REJECTED
-                ) { _, _ -> }
+                ) { ok, err ->
+                    if (!ok && err != null) showMessage("Updated locally; cloud sync error: $err", isError = true)
+                }
             }
             showMessage("Booking updated to ${localRes.data.label}.")
         } else if (uiState.isFirebaseConnected && cloudTarget != null) {
+            val myProvId = uiState.currentProvider?.providerId
+            when (val guard = BookingRulesEngine.verifyResourceOwnership(user, myProvId, cloudTarget.providerId, "booking request")) {
+                is RuleResult.Denied -> {
+                    showMessage(guard.reason, isError = true)
+                    return
+                }
+                RuleResult.Allowed -> Unit
+            }
+            if (cloudTarget.status != BookingStatus.PENDING) {
+                showMessage("Only Pending requests can be responded to.", isError = true)
+                return
+            }
             val newStatus = if (accept) BookingStatus.ACCEPTED else BookingStatus.REJECTED
             firebaseSync.updateBookingStatus(cloudTarget, newStatus) { ok, err ->
-                showMessage(if (ok) "Live booking ${newStatus.label}!" else "Access denied: $err", !ok)
+                showMessage(if (ok) "Live booking ${newStatus.label}!" else "Cloud update failed: $err", !ok)
             }
         } else if (localRes is OpResult.Error) {
             showMessage(localRes.message, isError = true)
@@ -619,7 +708,21 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
                 }
                 showMessage("Trip/Stay marked Completed. Tourist can now submit a review!")
             }
-            is OpResult.Error -> showMessage(res.message, isError = true)
+            is OpResult.Error -> {
+                if (uiState.isFirebaseConnected && cloudTarget != null) {
+                    val myProvId = uiState.currentProvider?.providerId
+                    when (val guard = BookingRulesEngine.verifyResourceOwnership(user, myProvId, cloudTarget.providerId, "booking")) {
+                        is RuleResult.Denied -> showMessage(guard.reason, isError = true)
+                        RuleResult.Allowed -> {
+                            firebaseSync.updateBookingStatus(cloudTarget, BookingStatus.COMPLETED) { ok, err ->
+                                showMessage(if (ok) "Live booking marked Completed." else "Cloud update failed: $err", !ok)
+                            }
+                        }
+                    }
+                } else {
+                    showMessage(res.message, isError = true)
+                }
+            }
         }
     }
 
@@ -628,6 +731,9 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         when (val res = repo.submitReview(user, bookingId, rating, comment)) {
             is OpResult.Success -> {
                 refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.upsertReview(res.data)
+                }
                 showMessage("Thank you! Your ${res.data.rating}★ review is live.")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -760,12 +866,27 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
 
     fun adminVerifyDocument(documentId: String, status: VerificationStatus, notes: String) {
         val user = uiState.currentUser ?: return
-        when (val res = repo.adminReviewDocument(user, documentId, status, notes)) {
+        val doc = uiState.verificationDocs.firstOrNull { it.documentId == documentId }
+        val localRes = repo.adminReviewDocument(user, documentId, status, notes)
+        when (localRes) {
             is OpResult.Success -> {
                 refreshAll()
+                if (uiState.isFirebaseConnected && doc != null) {
+                    firebaseSync.adminUpdateVerificationDoc(doc, status, notes) { _, _ -> }
+                    firebaseSync.pushAuditLog(user.role.name, "DOC_${status.name}", documentId, notes.ifBlank { status.label })
+                }
                 showMessage("Verification updated to ${status.label} & logged.")
             }
-            is OpResult.Error -> showMessage(res.message, isError = true)
+            is OpResult.Error -> {
+                if (uiState.isFirebaseConnected && doc != null && user.role == UserRole.ADMINISTRATOR) {
+                    firebaseSync.adminUpdateVerificationDoc(doc, status, notes) { ok, err ->
+                        if (ok) firebaseSync.pushAuditLog(user.role.name, "DOC_${status.name}", documentId, notes.ifBlank { status.label })
+                        showMessage(if (ok) "Cloud verification updated to ${status.label}!" else "Cloud error: $err", !ok)
+                    }
+                } else {
+                    showMessage(localRes.message, isError = true)
+                }
+            }
         }
     }
 
@@ -774,6 +895,10 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         when (val res = repo.adminUpdateListingApproval(user, "vehicles", "vehicle_id", vehicleId, status)) {
             is OpResult.Success -> {
                 refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.adminUpdateListingApproval("vehicles", vehicleId, status) { _, _ -> }
+                    firebaseSync.pushAuditLog(user.role.name, "VEHICLE_${status.name}", vehicleId, "Listing moderation")
+                }
                 showMessage("Vehicle marked ${status.label}.")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -785,6 +910,10 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         when (val res = repo.adminUpdateListingApproval(user, "drivers", "driver_id", driverId, status)) {
             is OpResult.Success -> {
                 refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.adminUpdateListingApproval("drivers", driverId, status) { _, _ -> }
+                    firebaseSync.pushAuditLog(user.role.name, "DRIVER_${status.name}", driverId, "Listing moderation")
+                }
                 showMessage("Driver marked ${status.label}.")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
@@ -796,7 +925,55 @@ class MotoMoveViewModel(application: Application) : AndroidViewModel(application
         when (val res = repo.adminUpdateListingApproval(user, "properties", "property_id", propertyId, status)) {
             is OpResult.Success -> {
                 refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.adminUpdateListingApproval("properties", propertyId, status) { _, _ -> }
+                    firebaseSync.pushAuditLog(user.role.name, "PROPERTY_${status.name}", propertyId, "Listing moderation")
+                }
                 showMessage("Property marked ${status.label}.")
+            }
+            is OpResult.Error -> showMessage(res.message, isError = true)
+        }
+    }
+
+    fun adminSetUserAccountStatus(targetUser: User, newAccountStatus: String) {
+        val admin = uiState.currentUser ?: return
+        if (admin.role != UserRole.ADMINISTRATOR) {
+            showMessage("Access Denied: Only Administrators can moderate user accounts.", isError = true)
+            return
+        }
+        val res = repo.adminSetUserAccountStatus(admin, targetUser.userId, newAccountStatus)
+        if (res is OpResult.Success) {
+            refreshAll()
+            if (uiState.isFirebaseConnected) {
+                val matchingCloudUser = cloudUsers.firstOrNull {
+                    it.userId == targetUser.userId || it.contact.equals(targetUser.contact, ignoreCase = true)
+                }
+                matchingCloudUser?.let {
+                    firebaseSync.adminSetUserAccountStatus(it.userId, newAccountStatus) { _, _ -> }
+                }
+                firebaseSync.pushAuditLog(admin.role.name, "USER_$newAccountStatus", targetUser.userId, "Target=${targetUser.name}")
+            }
+            showMessage("${targetUser.name} account marked $newAccountStatus.")
+        } else if (uiState.isFirebaseConnected) {
+            firebaseSync.adminSetUserAccountStatus(targetUser.userId, newAccountStatus) { ok, err ->
+                if (ok) firebaseSync.pushAuditLog(admin.role.name, "USER_$newAccountStatus", targetUser.userId, "Target=${targetUser.name}")
+                showMessage(if (ok) "${targetUser.name} marked $newAccountStatus on Cloud." else "Cloud error: $err", !ok)
+            }
+        } else if (res is OpResult.Error) {
+            showMessage(res.message, isError = true)
+        }
+    }
+
+    fun adminModerateReview(reviewId: String, moderationStatus: String) {
+        val admin = uiState.currentUser ?: return
+        when (val res = repo.adminModerateReview(admin, reviewId, moderationStatus)) {
+            is OpResult.Success -> {
+                refreshAll()
+                if (uiState.isFirebaseConnected) {
+                    firebaseSync.adminModerateReview(reviewId, moderationStatus) { _, _ -> }
+                    firebaseSync.pushAuditLog(admin.role.name, "REVIEW_$moderationStatus", reviewId, "Review moderation")
+                }
+                showMessage("Review marked $moderationStatus.")
             }
             is OpResult.Error -> showMessage(res.message, isError = true)
         }

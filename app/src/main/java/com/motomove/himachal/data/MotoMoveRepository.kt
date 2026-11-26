@@ -516,18 +516,24 @@ class MotoMoveRepository(private val dbHelper: MotoMoveDatabaseHelper) {
             endEpochDay = today + 1,
             slot = TimeSlot.EVENING_18_24,
             guestOrSeatCount = guests.coerceIn(1, 10),
-            status = BookingStatus.ACCEPTED,
+            status = BookingStatus.PENDING,
             quotedPriceInr = spot.avgCostInr * guests.coerceIn(1, 10),
             cancellationTerms = "Free table cancellation up to 2h prior.",
             createdAt = System.currentTimeMillis(),
-            respondedAt = System.currentTimeMillis()
+            respondedAt = null
         )
         insertBooking(booking)
         insertNotification(
             userId = tourist.userId,
             category = NotificationCategory.DEALS,
-            eventType = "TABLE_RESERVED",
-            message = "Table reserved at ${spot.name} for $guests guests."
+            eventType = "TABLE_REQUESTED",
+            message = "Table reservation request sent to ${spot.name} for $guests guests."
+        )
+        notifyProviderOwner(
+            providerId = spot.providerId,
+            category = NotificationCategory.TRIPS,
+            eventType = "NEW_TABLE_BOOKING",
+            message = "New table request from ${tourist.name} at ${spot.name} ($guests guests)."
         )
         return OpResult.Success(booking)
     }
@@ -1067,6 +1073,75 @@ class MotoMoveRepository(private val dbHelper: MotoMoveDatabaseHelper) {
             arrayOf(listingId)
         )
         writeAudit(admin.userId, admin.role.name, "LISTING_${newStatus.name}", listingId, "Table=$table")
+        return OpResult.Success(Unit)
+    }
+
+    fun getAllUsersForAdmin(actor: User): List<User> {
+        if (actor.role != UserRole.ADMINISTRATOR) return emptyList()
+        return getAllDemoUsers()
+    }
+
+    fun adminSetUserAccountStatus(
+        admin: User,
+        targetUserId: String,
+        newAccountStatus: String
+    ): OpResult<Unit> {
+        when (val guard = BookingRulesEngine.verifyAdminOnly(admin, "user account moderation")) {
+            is RuleResult.Denied -> {
+                writeAudit(admin.userId, admin.role.name, "SECURITY_DENIED_ADMIN_USER", targetUserId, guard.reason)
+                return OpResult.Error(guard.reason)
+            }
+            RuleResult.Allowed -> Unit
+        }
+        if (targetUserId == admin.userId) {
+            return OpResult.Error("Administrators cannot suspend their own active account.")
+        }
+        if (newAccountStatus !in setOf("ACTIVE", "SUSPENDED")) {
+            return OpResult.Error("Invalid account status: $newAccountStatus")
+        }
+        val rows = dbHelper.writableDatabase.update(
+            "users",
+            ContentValues().apply { put("account_status", newAccountStatus) },
+            "user_id=?",
+            arrayOf(targetUserId)
+        )
+        if (rows <= 0) return OpResult.Error("User not found.")
+        insertNotification(
+            userId = targetUserId,
+            category = NotificationCategory.TRIPS,
+            eventType = "ACCOUNT_$newAccountStatus",
+            message = if (newAccountStatus == "SUSPENDED") {
+                "Your account was suspended by Platform Admin. Contact support@motomove.in."
+            } else {
+                "Your account has been reactivated by Platform Admin."
+            }
+        )
+        writeAudit(admin.userId, admin.role.name, "USER_$newAccountStatus", targetUserId, "Account status set to $newAccountStatus")
+        return OpResult.Success(Unit)
+    }
+
+    fun adminModerateReview(
+        admin: User,
+        reviewId: String,
+        moderationStatus: String
+    ): OpResult<Unit> {
+        when (val guard = BookingRulesEngine.verifyAdminOnly(admin, "review moderation")) {
+            is RuleResult.Denied -> {
+                writeAudit(admin.userId, admin.role.name, "SECURITY_DENIED_ADMIN_REVIEW", reviewId, guard.reason)
+                return OpResult.Error(guard.reason)
+            }
+            RuleResult.Allowed -> Unit
+        }
+        if (moderationStatus !in setOf("VISIBLE", "HIDDEN", "FLAGGED")) {
+            return OpResult.Error("Invalid moderation status.")
+        }
+        dbHelper.writableDatabase.update(
+            "reviews",
+            ContentValues().apply { put("moderation_status", moderationStatus) },
+            "review_id=?",
+            arrayOf(reviewId)
+        )
+        writeAudit(admin.userId, admin.role.name, "REVIEW_$moderationStatus", reviewId, "Review marked $moderationStatus")
         return OpResult.Success(Unit)
     }
 

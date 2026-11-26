@@ -118,6 +118,12 @@ class BookingRulesEngineTest {
 
         // Non-admin cannot access admin moderation
         assertTrue(BookingRulesEngine.verifyAdminOnly(ownerA, "document verification") is RuleResult.Denied)
+        assertTrue(BookingRulesEngine.verifyAdminOnly(touristA, "user suspension") is RuleResult.Denied)
+        assertTrue(BookingRulesEngine.verifyAdminOnly(ownerB, "review moderation") is RuleResult.Denied)
+
+        // Admin is allowed moderation
+        val admin = User("u_admin_1", "Admin", "admin@motomove.in", "", UserRole.ADMINISTRATOR)
+        assertEquals(RuleResult.Allowed, BookingRulesEngine.verifyAdminOnly(admin, "user suspension"))
     }
 
     @Test

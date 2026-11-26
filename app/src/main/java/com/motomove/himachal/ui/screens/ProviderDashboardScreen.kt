@@ -38,7 +38,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.motomove.himachal.data.HimachalCatalog
+import com.motomove.himachal.model.Booking
 import com.motomove.himachal.model.BookingStatus
+import com.motomove.himachal.model.BookingType
 import com.motomove.himachal.model.DiningSpot
 import com.motomove.himachal.model.DriverProfile
 import com.motomove.himachal.model.PropertyListing
@@ -107,24 +109,59 @@ fun ProviderDashboardScreen(
             }
         }
 
-        Text("Incoming Booking Requests (${myBookings.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-        if (myBookings.isEmpty()) {
+        val sortedBookings = myBookings.sortedWith(
+            compareBy<Booking> { it.status != BookingStatus.PENDING }.thenByDescending { it.createdAt }
+        )
+        val pendingCount = sortedBookings.count { it.status == BookingStatus.PENDING }
+        Text(
+            "Incoming Booking Requests (${sortedBookings.size} • $pendingCount Pending)",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+        if (sortedBookings.isEmpty()) {
             Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
-                Text("No booking requests yet for your listings.", modifier = Modifier.padding(14.dp))
+                Text("No booking requests yet for your vehicles, stays, or dining tables.", modifier = Modifier.padding(14.dp))
             }
         } else {
-            myBookings.forEach { b ->
-                Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
+            sortedBookings.forEach { b ->
+                val typeBadge = when (b.bookingType) {
+                    BookingType.DINING -> "Dining Table Request"
+                    BookingType.STAY -> "Stay Room Request"
+                    BookingType.HUB_PICKUP -> "Hub Pickup Request"
+                    BookingType.LOCAL_MOBILITY -> "Ride / Driver Request"
+                }
+                val isPending = b.status == BookingStatus.PENDING
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isPending) Color(0xFFFFFBEB) else Color.White
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("${b.listingTitle} • ${b.status.label}", fontWeight = FontWeight.Bold)
-                        Text("Tourist: ${b.touristName} • Hub: ${b.pickupHubCode ?: "Local"} -> ${b.destinationCluster}", style = MaterialTheme.typography.bodySmall)
-                        Text("Train/Flight: ${b.trainOrFlightNo ?: "N/A"} • ₹${b.quotedPriceInr}", style = MaterialTheme.typography.bodySmall)
+                        Text("$typeBadge • ${b.listingTitle}", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Status: ${b.status.label} • Tourist: ${b.touristName} • Guests/Seats: ${b.guestOrSeatCount}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = if (isPending) FontWeight.SemiBold else FontWeight.Normal
+                        )
+                        Text(
+                            "Area/Hub: ${b.pickupHubCode ?: "Local"} -> ${b.destinationCluster} • ₹${b.quotedPriceInr}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (b.pickupNotes.isNotBlank() || !b.trainOrFlightNo.isNullOrBlank()) {
+                            Text(
+                                "Notes: ${b.pickupNotes} ${b.trainOrFlightNo?.takeIf { it.isNotBlank() }?.let { "• $it" } ?: ""}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF475569)
+                            )
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (b.status == BookingStatus.PENDING) {
                                 Button(onClick = { onRespondBooking(b.bookingId, true) }, colors = ButtonDefaults.buttonColors(containerColor = MotoGreen)) { Text("Accept") }
-                                OutlinedButton(onClick = { onRespondBooking(b.bookingId, false) }) { Text("Reject") }
+                                OutlinedButton(onClick = { onRespondBooking(b.bookingId, false) }) { Text("Reject", color = Color(0xFFDC2626)) }
                             } else if (b.status == BookingStatus.ACCEPTED) {
-                                Button(onClick = { onCompleteBooking(b.bookingId) }) { Text("Mark Completed") }
+                                Button(onClick = { onCompleteBooking(b.bookingId) }, colors = ButtonDefaults.buttonColors(containerColor = MotoGreen)) { Text("Mark Completed") }
                             }
                         }
                     }

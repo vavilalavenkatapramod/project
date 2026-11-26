@@ -193,8 +193,35 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        userDoc().role == 'ADMINISTRATOR';
+        (
+          ('email' in request.auth.token && request.auth.token.email == 'admin@motomove.in') ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            userDoc().role == 'ADMINISTRATOR')
+        );
+    }
+
+    function myProviderId() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        'providerId' in userDoc() &&
+        userDoc().providerId is string
+        ? userDoc().providerId
+        : '';
+    }
+
+    function ownsProvider(pid) {
+      return pid is string &&
+        pid != '' &&
+        exists(/databases/$(database)/documents/providers/$(pid)) &&
+        get(/databases/$(database)/documents/providers/$(pid)).data.ownerUid == request.auth.uid;
+    }
+
+    function isBookingProvider(data) {
+      return data.ownerUid == request.auth.uid ||
+        ('providerId' in data &&
+          data.providerId is string &&
+          data.providerId != '' &&
+          data.providerId == myProviderId() &&
+          ownsProvider(data.providerId));
     }
 
     function hasRole(r) {
@@ -279,7 +306,7 @@ service cloud.firestore {
       return hasRequiredFields(['userId', 'name', 'role']) &&
         hasOnlyAllowedFields([
           'userId', 'name', 'contact', 'email', 'phone',
-          'role', 'accountStatus', 'homeCluster', 'fcmToken',
+          'role', 'providerId', 'accountStatus', 'homeCluster', 'fcmToken',
           'createdAt', 'updatedAt'
         ]) &&
         validStringLength(data, 'userId', 1, 128) &&
@@ -288,10 +315,27 @@ service cloud.firestore {
         (!('email' in data) || isValidEmail(data.email)) &&
         isValidOptionalString(data, 'phone', 7, 20) &&
         data.role in ['TOURIST', 'VEHICLE_OWNER', 'LOCAL_DRIVER', 'ACCOMMODATION_PROVIDER', 'ADMINISTRATOR'] &&
+        isValidOptionalString(data, 'providerId', 0, 128) &&
         (!('accountStatus' in data) || data.accountStatus in ['ACTIVE', 'SUSPENDED']) &&
-        isValidOptionalString(data, 'homeCluster', 1, 120) &&
+        isValidOptionalString(data, 'homeCluster', 0, 120) &&
         isValidOptionalString(data, 'fcmToken', 1, 512) &&
         isValidOptionalTime(data, 'createdAt') &&
+        isValidOptionalTime(data, 'updatedAt');
+    }
+
+    function isValidProvider(data) {
+      return hasRequiredFields(['providerId', 'ownerUid']) &&
+        hasOnlyAllowedFields([
+          'providerId', 'ownerUid', 'userId', 'displayName',
+          'providerType', 'verificationStatus', 'homeCluster', 'updatedAt'
+        ]) &&
+        validStringLength(data, 'providerId', 1, 128) &&
+        validStringLength(data, 'ownerUid', 1, 128) &&
+        isValidOptionalString(data, 'userId', 1, 128) &&
+        isValidOptionalString(data, 'displayName', 1, 100) &&
+        isValidOptionalString(data, 'providerType', 1, 60) &&
+        (!('verificationStatus' in data) || data.verificationStatus in ['PENDING', 'VERIFIED', 'REJECTED', 'EXPIRED']) &&
+        isValidOptionalString(data, 'homeCluster', 0, 120) &&
         isValidOptionalTime(data, 'updatedAt');
     }
 
@@ -430,7 +474,7 @@ service cloud.firestore {
     function isValidBooking(data) {
       return hasRequiredFields(['touristUid', 'ownerUid', 'status', 'guestOrSeatCount', 'quotedPriceInr']) &&
         hasOnlyAllowedFields([
-          'bookingId', 'touristUid', 'touristName', 'ownerUid',
+          'bookingId', 'touristId', 'touristUid', 'touristName', 'ownerUid',
           'providerId', 'listingId', 'listingTitle', 'bookingType',
           'pickupHubCode', 'destinationCluster', 'trainOrFlightNo',
           'pickupNotes', 'startEpochDay', 'endEpochDay', 'slot',
@@ -438,15 +482,16 @@ service cloud.firestore {
           'cancellationTerms', 'createdAt', 'respondedAt', 'updatedAt'
         ]) &&
         validStringLength(data, 'touristUid', 1, 128) &&
-        validStringLength(data, 'ownerUid', 1, 128) &&
+        validStringLength(data, 'ownerUid', 0, 128) &&
         isValidOptionalString(data, 'bookingId', 1, 128) &&
+        isValidOptionalString(data, 'touristId', 0, 128) &&
         isValidOptionalString(data, 'touristName', 1, 100) &&
         isValidOptionalString(data, 'providerId', 1, 128) &&
         isValidOptionalString(data, 'listingId', 1, 128) &&
         isValidOptionalString(data, 'listingTitle', 1, 150) &&
         (!('bookingType' in data) || data.bookingType in ['HUB_PICKUP', 'LOCAL_MOBILITY', 'STAY', 'DINING']) &&
         isValidNullableString(data, 'pickupHubCode', 0, 40) &&
-        isValidOptionalString(data, 'destinationCluster', 1, 120) &&
+        isValidOptionalString(data, 'destinationCluster', 0, 120) &&
         isValidNullableString(data, 'trainOrFlightNo', 0, 40) &&
         isValidOptionalString(data, 'pickupNotes', 0, 500) &&
         (!('startEpochDay' in data) || (data.startEpochDay is int && data.startEpochDay >= 0)) &&
@@ -465,10 +510,11 @@ service cloud.firestore {
     function isValidNotification(data) {
       return hasRequiredFields(['userUid', 'message']) &&
         hasOnlyAllowedFields([
-          'notificationId', 'userUid', 'category', 'eventType',
+          'notificationId', 'userUid', 'targetProviderId', 'category', 'eventType',
           'message', 'isRead', 'createdAt'
         ]) &&
-        validStringLength(data, 'userUid', 1, 128) &&
+        validStringLength(data, 'userUid', 0, 128) &&
+        isValidOptionalString(data, 'targetProviderId', 0, 128) &&
         isValidOptionalString(data, 'notificationId', 1, 128) &&
         (!('category' in data) || data.category in ['TRIPS', 'DEALS', 'AI_TIPS']) &&
         isValidOptionalString(data, 'eventType', 1, 80) &&
@@ -502,7 +548,7 @@ service cloud.firestore {
           'documentType', 'fileReference', 'reviewStatus',
           'expiryDate', 'reviewerNotes', 'createdAt', 'updatedAt'
         ]) &&
-        validStringLength(data, 'ownerUid', 1, 128) &&
+        validStringLength(data, 'ownerUid', 0, 128) &&
         isValidOptionalString(data, 'documentId', 1, 128) &&
         isValidOptionalString(data, 'providerId', 1, 128) &&
         isValidOptionalString(data, 'providerName', 1, 100) &&
@@ -535,21 +581,59 @@ service cloud.firestore {
     // Collection Rules
     // ===============================================================
 
-    // Users: strict PII isolation; self-registration excludes ADMINISTRATOR; role & userId immutable
+    // Users: strict PII isolation; self-registration excludes ADMINISTRATOR (except seeded admin email); admin can moderate status
     match /users/{userId} {
       allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
       allow create: if isSignedIn() &&
         request.auth.uid == userId &&
         request.resource.data.userId == userId &&
-        request.resource.data.role in ['TOURIST', 'VEHICLE_OWNER', 'LOCAL_DRIVER', 'ACCOMMODATION_PROVIDER'] &&
+        (
+          request.resource.data.role in ['TOURIST', 'VEHICLE_OWNER', 'LOCAL_DRIVER', 'ACCOMMODATION_PROVIDER'] ||
+          (request.resource.data.role == 'ADMINISTRATOR' && 'email' in request.auth.token && request.auth.token.email == 'admin@motomove.in')
+        ) &&
+        (
+          request.resource.data.role in ['VEHICLE_OWNER', 'LOCAL_DRIVER', 'ACCOMMODATION_PROVIDER'] ||
+          !('providerId' in request.resource.data) ||
+          request.resource.data.providerId == ''
+        ) &&
         (!('accountStatus' in request.resource.data) || request.resource.data.accountStatus == 'ACTIVE') &&
         isValidUser(request.resource.data);
       allow update: if isSignedIn() &&
-        request.auth.uid == userId &&
-        request.resource.data.role == resource.data.role &&
-        request.resource.data.userId == resource.data.userId &&
-        areImmutableFieldsUnchanged(['userId', 'role', 'accountStatus', 'createdAt']) &&
+        (
+          (request.auth.uid == userId &&
+            areImmutableFieldsUnchanged(['userId', 'role', 'accountStatus', 'createdAt']) &&
+            (
+              resource.data.role in ['VEHICLE_OWNER', 'LOCAL_DRIVER', 'ACCOMMODATION_PROVIDER'] ||
+              !('providerId' in request.resource.data) ||
+              request.resource.data.providerId == ''
+            )) ||
+          (request.auth.uid == userId &&
+            'email' in request.auth.token &&
+            request.auth.token.email == 'admin@motomove.in' &&
+            request.resource.data.role == 'ADMINISTRATOR' &&
+            areImmutableFieldsUnchanged(['userId', 'accountStatus', 'createdAt'])) ||
+          (isAdmin() &&
+            areImmutableFieldsUnchanged(['userId', 'role', 'providerId', 'createdAt']))
+        ) &&
         isValidUser(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Providers: verified ownership anchor for multi-device booking & notification routing
+    match /providers/{providerId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.providerId == providerId &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        isValidProvider(request.resource.data);
+      allow update: if isSignedIn() &&
+        (
+          (resource.data.ownerUid == request.auth.uid &&
+            areImmutableFieldsUnchanged(['providerId', 'ownerUid'])) ||
+          (isAdmin() &&
+            areImmutableFieldsUnchanged(['providerId', 'ownerUid']))
+        ) &&
+        isValidProvider(request.resource.data);
       allow delete: if false;
     }
 
@@ -652,11 +736,11 @@ service cloud.firestore {
       allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
     }
 
-    // Bookings: participant or admin read; tourist create; strict state-machine update; no delete
+    // Bookings: participant, matching provider owner, or admin read; tourist create; strict state-machine update; no delete
     match /bookings/{bookingId} {
       allow read: if isSignedIn() &&
         (resource.data.touristUid == request.auth.uid ||
-         resource.data.ownerUid == request.auth.uid ||
+         isBookingProvider(resource.data) ||
          isAdmin());
       allow create: if isSignedIn() &&
         request.resource.data.touristUid == request.auth.uid &&
@@ -665,11 +749,8 @@ service cloud.firestore {
         request.resource.data.guestOrSeatCount > 0 &&
         isValidBooking(request.resource.data);
       allow update: if isSignedIn() &&
-        request.resource.data.touristUid == resource.data.touristUid &&
-        request.resource.data.ownerUid == resource.data.ownerUid &&
-        request.resource.data.quotedPriceInr == resource.data.quotedPriceInr &&
         areImmutableFieldsUnchanged([
-          'bookingId', 'touristUid', 'touristName', 'ownerUid',
+          'bookingId', 'touristId', 'touristUid', 'touristName', 'ownerUid',
           'providerId', 'listingId', 'listingTitle', 'bookingType',
           'startEpochDay', 'endEpochDay', 'slot', 'guestOrSeatCount',
           'quotedPriceInr', 'createdAt'
@@ -678,32 +759,44 @@ service cloud.firestore {
           (resource.data.touristUid == request.auth.uid &&
             resource.data.status in ['PENDING', 'ACCEPTED'] &&
             request.resource.data.status == 'CANCELLED') ||
-          (resource.data.ownerUid == request.auth.uid &&
+          (isBookingProvider(resource.data) &&
             resource.data.status == 'PENDING' &&
             request.resource.data.status in ['ACCEPTED', 'REJECTED']) ||
-          (resource.data.ownerUid == request.auth.uid &&
+          (isBookingProvider(resource.data) &&
             resource.data.status == 'ACCEPTED' &&
-            request.resource.data.status == 'COMPLETED')
+            request.resource.data.status == 'COMPLETED') ||
+          isAdmin()
         ) &&
         isValidBooking(request.resource.data);
       allow delete: if false;
     }
 
-    // Notifications: recipient read/delete; recipient can only mark isRead; bounded message on create
+    // Notifications: recipient or matching provider read/mark-read; bounded message on create
     match /notifications/{notificationId} {
-      allow read: if isSignedIn() && resource.data.userUid == request.auth.uid;
+      allow read: if isSignedIn() &&
+        (resource.data.userUid == request.auth.uid ||
+         ('targetProviderId' in resource.data &&
+           resource.data.targetProviderId is string &&
+           resource.data.targetProviderId != '' &&
+           resource.data.targetProviderId == myProviderId() &&
+           ownsProvider(resource.data.targetProviderId)));
       allow create: if isSignedIn() &&
         request.resource.data.message is string &&
         request.resource.data.message.size() <= 500 &&
         isValidNotification(request.resource.data);
       allow update: if isSignedIn() &&
-        resource.data.userUid == request.auth.uid &&
+        (resource.data.userUid == request.auth.uid ||
+         ('targetProviderId' in resource.data &&
+           resource.data.targetProviderId is string &&
+           resource.data.targetProviderId != '' &&
+           resource.data.targetProviderId == myProviderId() &&
+           ownsProvider(resource.data.targetProviderId))) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']) &&
         isValidNotification(request.resource.data);
       allow delete: if isSignedIn() && resource.data.userUid == request.auth.uid;
     }
 
-    // Reviews: authenticated read; tourist create with 1..5 rating; immutable (no update/delete)
+    // Reviews: authenticated read; tourist create with 1..5 rating; admin moderation status update; no delete
     match /reviews/{reviewId} {
       allow read: if isSignedIn();
       allow create: if isSignedIn() &&
@@ -713,16 +806,25 @@ service cloud.firestore {
         request.resource.data.rating <= 5 &&
         (!('moderationStatus' in request.resource.data) || request.resource.data.moderationStatus == 'VISIBLE') &&
         isValidReview(request.resource.data);
-      allow update, delete: if false;
+      allow update: if isAdmin() &&
+        areImmutableFieldsUnchanged([
+          'reviewId', 'bookingId', 'touristUid', 'touristName',
+          'listingId', 'rating', 'comment', 'createdAt'
+        ]) &&
+        isValidReview(request.resource.data);
+      allow delete: if false;
     }
 
-    // Verification Docs: owner or admin read; owner create (PENDING); admin-only update; no delete
+    // Verification Docs: owner or admin read; owner or admin create; admin-only update; no delete
     match /verificationDocs/{docId} {
       allow read: if isSignedIn() &&
         (resource.data.ownerUid == request.auth.uid || isAdmin());
       allow create: if isSignedIn() &&
-        request.resource.data.ownerUid == request.auth.uid &&
-        (!('reviewStatus' in request.resource.data) || request.resource.data.reviewStatus == 'PENDING' || isAdmin()) &&
+        (
+          (request.resource.data.ownerUid == request.auth.uid &&
+            (!('reviewStatus' in request.resource.data) || request.resource.data.reviewStatus == 'PENDING')) ||
+          isAdmin()
+        ) &&
         isValidVerificationDoc(request.resource.data);
       allow update: if isAdmin() &&
         request.resource.data.ownerUid == resource.data.ownerUid &&
